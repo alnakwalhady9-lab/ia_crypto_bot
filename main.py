@@ -1,5 +1,25 @@
 import requests
 import time
+import os
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+def send_telegram_message(message):
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print("Telegram settings are missing")
+        return
+
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    data = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": message
+    }
+
+    try:
+        response = requests.post(url, data=data, timeout=10)
+        response.raise_for_status()
+        print("Telegram message sent successfully")
+    except requests.exceptions.RequestException as e:
+        print(f"Telegram error: {e}")
 
 def get_btc_price():
     url = "https://api.coinbase.com/v2/prices/BTC-USD/spot"
@@ -37,6 +57,7 @@ while True:
         print("Bitcoin Current Price")
         print("------------------------------")
         print(f"BTC/USD: {price} {currency}")
+        send_telegram_message(f"BTC/USD: {price} {currency}")
         print("------------------------------")
 
     time.sleep(60)
