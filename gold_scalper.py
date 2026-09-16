@@ -1,5 +1,5 @@
 import os,time,requests
-TELEGRAM_BOT_TOKEN=os.getenv("TELEGRAM_BOT_TOKEN");TELEGRAM_CHAT_ID=os.getenv("TELEGRAM_CHAT_ID");TWELVE_DATA_API_KEY=os.getenv("TWELVE_DATA_API_KEY")
+TELEGRAM_BOT_TOKEN=os.getenv("GOLD_TELEGRAM_BOT_TOKEN");TELEGRAM_CHAT_ID=os.getenv("GOLD_TELEGRAM_CHAT_ID");TWELVE_DATA_API_KEY=os.getenv("TWELVE_DATA_API_KEY")
 TD_URL="https://api.twelvedata.com/time_series";REPORT_SECONDS=900;CACHE_TTL={"5min":60,"15min":180,"1h":600};cache={}
 
 def send_telegram(m):
@@ -69,8 +69,7 @@ def harmonic(c):
             side="BUY" if P[-1][2]=="L" else "SELL";best={"name":name,"side":side,"d":D,"ratios":(rAB,rBC,rCD,rAD)}
     return best
 def divergence(c):
-    ps=pivots(c[-80:],2,2);v=[x["close"] for x in c];rv=[]
-    for i in range(15,len(v)):rv.append((i,rsi(v[:i+1])))
+    ps=pivots(c[-80:],2,2);v=[x["close"] for x in c]
     lows=[p for p in ps if p[2]=="L"][-2:];highs=[p for p in ps if p[2]=="H"][-2:]
     if len(lows)==2:
         a,b=lows;ra=rsi(v[:a[0]+1]);rb=rsi(v[:b[0]+1])
@@ -90,7 +89,7 @@ def analyze():
     s5=snapshot(fetch_series("XAU/USD","5min"));s15=snapshot(fetch_series("XAU/USD","15min"));s1=snapshot(fetch_series("XAU/USD","1h"))
     if not all((s5,s15,s1)):return None
     t5,t15,t1=trend(s5),trend(s15),trend(s1);h5=harmonic(s5["candles"]);h15=harmonic(s15["candles"]);div=divergence(s5["candles"]);usd=usd_strength();p=s5["price"];a=s5["atr"] or p*.001
-    recent=s5["candles"][-20:];sup=min(x["low"] for x in recent);res=max(x["high"] for x in recent);score=0;buy=0;sell=0;reasons=[]
+    recent=s5["candles"][-20:];sup=min(x["low"] for x in recent);res=max(x["high"] for x in recent);buy=0;sell=0;reasons=[]
     if t5=="BULLISH":buy+=20
     elif t5=="BEARISH":sell+=20
     if t15=="BULLISH":buy+=20
