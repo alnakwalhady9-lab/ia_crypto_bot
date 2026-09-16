@@ -42,16 +42,27 @@ def send_telegram_message(message):
         print(f"Telegram error: {e}")
 
 
-def get_binance_klines(interval="15m", limit=100):
-    url = "https://api.binance.com/api/v3/klines"
-    params = {"symbol": "BTCUSDT", "interval": interval, "limit": limit}
-
+def get_market_candles():
+    # Coinbase public Exchange candles are used because Binance returned HTTP 451 from Railway.
+    # granularity=900 means 15-minute candles. Response: [time, low, high, open, close, volume].
+    url = "https://api.exchange.coinbase.com/products/BTC-USD/candles"
+    params = {"granularity": 900}
     try:
-        response = requests.get(url, params=params, timeout=10)
+        response = requests.get(
+            url,
+            params=params,
+            timeout=10,
+            headers={"User-Agent": "ia-crypto-bot/1.0", "Accept": "application/json"},
+        )
         response.raise_for_status()
-        return response.json()
-    except requests.exceptions.RequestException as e:
-        print(f"Binance API error: {e}")
+        candles = response.json()
+        if not isinstance(candles, list):
+            return None
+        # Coinbase returns newest first; normalize to oldest -> newest.
+        candles.sort(key=lambda row: row[0])
+        return candles[-100:]
+    except (requests.exceptions.RequestException, ValueError) as e:
+        print(f"Coinbase market API error: {e}")
         return None
 
 
@@ -66,19 +77,15 @@ def ema(values, period):
 def rsi(values, period=14):
     if len(values) <= period:
         return None
-
-    gains = []
-    losses = []
+    gains, losses = [], []
     for i in range(1, len(values)):
         change = values[i] - values[i - 1]
         gains.append(max(change, 0))
         losses.append(max(-change, 0))
-
     avg_gain = sum(gains[-period:]) / period
     avg_loss = sum(losses[-period:]) / period
     if avg_loss == 0:
         return 100.0
-
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
@@ -89,17 +96,11 @@ def clean_text(text):
 
 def get_news_sentiment():
     headlines = []
-
     for feed_url in NEWS_FEEDS:
         try:
-            response = requests.get(
-                feed_url,
-                timeout=10,
-                headers={"User-Agent": "Mozilla/5.0 ia-crypto-bot/1.0"},
-            )
+            response = requests.get(feed_url, timeout=10, headers={"User-Agent": "Mozilla/5.0 ia-crypto-bot/1.0"})
             response.raise_for_status()
             root = ET.fromstring(response.content)
-
             for item in root.findall(".//item")[:15]:
                 title = clean_text(item.findtext("title"))
                 description = clean_text(item.findtext("description"))
@@ -109,36 +110,29 @@ def get_news_sentiment():
         except (requests.exceptions.RequestException, ET.ParseError) as e:
             print(f"News feed error ({feed_url}): {e}")
 
-    # Remove duplicate headlines while preserving order.
     headlines = list(dict.fromkeys(headlines))[:20]
     if not headlines:
         return {"label": "NEUTRAL", "score": 0, "headlines": []}
 
     score = 0
     for headline in headlines:
-        words = headline.lower()
-        score += sum(1 for word in POSITIVE_NEWS_WORDS if word in words)
-        score -= sum(1 for word in NEGATIVE_NEWS_WORDS if word in words)
+        text = headline.lower()
+        score += sum(1 for word in POSITIVE_NEWS_WORDS if word in text)
+        score -= sum(1 for word in NEGATIVE_NEWS_WORDS if word in text)
 
-    if score >= 2:
-        label = "POSITIVE"
-    elif score <= -2:
-        label = "NEGATIVE"
-    else:
-        label = "NEUTRAL"
-
+    label = "POSITIVE" if score >= 2 else "NEGATIVE" if score <= -2 else "NEUTRAL"
     return {"label": label, "score": score, "headlines": headlines[:3]}
 
 
 def analyze_market():
-    klines = get_binance_klines()
-    if not klines or len(klines) < 50:
+    candles = get_market_candles()
+    if not candles or len(candles) < 51:
         return None
 
-    # Ignore the currently forming candle; analyze closed 15-minute candles only.
-    closed = klines[:-1]
-    closes = [float(k[4]) for k in closed]
-    volumes = [float(k[5]) for k in closed]
+    # Ignore newest candle because it may still be forming.
+    closed = candles[:-1]
+    closes = [float(c[4]) for c in closed]
+    volumes = [float(c[5]) for c in closed]
 
     price = closes[-1]
     ema20 = ema(closes[-50:], 20)
@@ -149,28 +143,17 @@ def analyze_market():
 
     technical_signal = "WAIT"
     reasons = []
-
     if price > ema20 > ema50 and rsi14 is not None and 52 <= rsi14 <= 70 and volume_ratio >= 1.05:
         technical_signal = "LONG"
-        reasons.extend([
-            "Price and EMA20 are above EMA50",
-            "RSI confirms bullish momentum",
-            "Volume is above its recent average",
-        ])
+        reasons.extend(["Price and EMA20 are above EMA50", "RSI confirms bullish momentum", "Volume is above its recent average"])
     elif price < ema20 < ema50 and rsi14 is not None and 30 <= rsi14 <= 48 and volume_ratio >= 1.05:
         technical_signal = "SHORT"
-        reasons.extend([
-            "Price and EMA20 are below EMA50",
-            "RSI confirms bearish momentum",
-            "Volume is above its recent average",
-        ])
+        reasons.extend(["Price and EMA20 are below EMA50", "RSI confirms bearish momentum", "Volume is above its recent average"])
     else:
         reasons.append("No high-confidence technical setup yet")
 
     news = get_news_sentiment()
     signal = technical_signal
-
-    # News is a confirmation/risk filter, never a standalone trading trigger.
     if technical_signal == "LONG" and news["label"] == "NEGATIVE":
         signal = "WAIT"
         reasons.append("Negative news sentiment conflicts with LONG setup")
@@ -181,61 +164,33 @@ def analyze_market():
         reasons.append(f'News sentiment: {news["label"]} ({news["score"]:+d})')
 
     risk_distance = price * 0.01
-    if signal == "LONG":
-        stop_loss = price - risk_distance
-        take_profit = price + (risk_distance * 2)
-    elif signal == "SHORT":
-        stop_loss = price + risk_distance
-        take_profit = price - (risk_distance * 2)
-    else:
-        stop_loss = None
-        take_profit = None
+    stop_loss = price - risk_distance if signal == "LONG" else price + risk_distance if signal == "SHORT" else None
+    take_profit = price + 2 * risk_distance if signal == "LONG" else price - 2 * risk_distance if signal == "SHORT" else None
 
     return {
-        "signal": signal,
-        "technical_signal": technical_signal,
-        "price": price,
-        "ema20": ema20,
-        "ema50": ema50,
-        "rsi": rsi14,
-        "volume_ratio": volume_ratio,
-        "stop_loss": stop_loss,
-        "take_profit": take_profit,
-        "reasons": reasons,
-        "news": news,
+        "signal": signal, "price": price, "rsi": rsi14, "volume_ratio": volume_ratio,
+        "stop_loss": stop_loss, "take_profit": take_profit, "reasons": reasons, "news": news,
     }
 
 
 last_signal = None
-
 while True:
     analysis = analyze_market()
-
     if analysis:
         signal = analysis["signal"]
-        print(
-            f'BTCUSDT: {analysis["price"]:.2f} | Signal: {signal} | '
-            f'RSI: {analysis["rsi"]:.1f} | News: {analysis["news"]["label"]}'
-        )
+        print(f'BTC-USD: {analysis["price"]:.2f} | Signal: {signal} | RSI: {analysis["rsi"]:.1f} | News: {analysis["news"]["label"]}')
 
         if signal in ("LONG", "SHORT") and signal != last_signal:
             news_titles = analysis["news"]["headlines"]
             news_text = "\n".join(f"- {title}" for title in news_titles) if news_titles else "No relevant headlines found"
-
             message = (
-                f'BTC/USDT SIGNAL: {signal}\n'
-                f'Entry reference: {analysis["price"]:.2f}\n'
-                f'Stop Loss: {analysis["stop_loss"]:.2f}\n'
-                f'Take Profit: {analysis["take_profit"]:.2f}\n'
-                f'RSI(14): {analysis["rsi"]:.1f}\n'
-                f'Volume ratio: {analysis["volume_ratio"]:.2f}x\n'
+                f'BTC/USD SIGNAL: {signal}\nEntry reference: {analysis["price"]:.2f}\n'
+                f'Stop Loss: {analysis["stop_loss"]:.2f}\nTake Profit: {analysis["take_profit"]:.2f}\n'
+                f'RSI(14): {analysis["rsi"]:.1f}\nVolume ratio: {analysis["volume_ratio"]:.2f}x\n'
                 f'News sentiment: {analysis["news"]["label"]} ({analysis["news"]["score"]:+d})\n'
-                f'Why: {"; ".join(analysis["reasons"])}\n\n'
-                f'Recent relevant headlines:\n{news_text}\n\n'
+                f'Why: {"; ".join(analysis["reasons"])}\n\nRecent relevant headlines:\n{news_text}\n\n'
                 'Analysis alert only - no trade was executed.'
             )
             send_telegram_message(message)
-
         last_signal = signal
-
     time.sleep(60)
