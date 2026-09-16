@@ -15,6 +15,7 @@ REDDIT_FEEDS = [
     "https://www.reddit.com/r/Bitcoin/new/.rss",
     "https://www.reddit.com/r/CryptoCurrency/new/.rss",
 ]
+REDDIT_CACHE_SECONDS = 900  # refresh Reddit at most once every 15 minutes
 
 POSITIVE_WORDS = {
     "approval", "approved", "adoption", "bullish", "surge", "rally", "record",
@@ -30,6 +31,8 @@ BTC_NEWS_WORDS = {
     "bitcoin", "btc", "crypto", "cryptocurrency", "etf", "sec", "fed", "federal reserve",
     "inflation", "interest rate", "rates", "cpi", "tariff", "regulation",
 }
+
+reddit_cache = {"timestamp": 0, "data": None}
 
 
 def send_telegram_message(message):
@@ -117,14 +120,22 @@ def get_news_sentiment():
     return {"label": label, "score": score, "headlines": headlines[:3]}
 
 
-def get_reddit_sentiment():
+def fetch_reddit_sentiment():
     posts = []
+    successful_feeds = 0
     for feed_url in REDDIT_FEEDS:
         try:
-            response = requests.get(feed_url, timeout=10, headers={"User-Agent": "ia-crypto-bot/1.0 (market research)"})
+            response = requests.get(
+                feed_url,
+                timeout=10,
+                headers={"User-Agent": "ia-crypto-bot/1.1 by market-research-bot", "Accept": "application/atom+xml,application/rss+xml"},
+            )
+            if response.status_code == 429:
+                print(f"Reddit rate limited ({feed_url}); skipping this feed")
+                continue
             response.raise_for_status()
+            successful_feeds += 1
             root = ET.fromstring(response.content)
-            # Reddit RSS/Atom entries use namespaces, so match by tag suffix.
             for entry in root.iter():
                 if entry.tag.endswith("entry"):
                     title = ""
@@ -136,9 +147,25 @@ def get_reddit_sentiment():
                         posts.append(title)
         except (requests.exceptions.RequestException, ET.ParseError) as e:
             print(f"Reddit feed error ({feed_url}): {e}")
+
+    if successful_feeds == 0:
+        return {"label": "UNAVAILABLE", "score": 0, "posts": [], "available": False}
+
     posts = list(dict.fromkeys(posts))[:20]
     label, score = score_texts(posts)
-    return {"label": label, "score": score, "posts": posts[:3]}
+    return {"label": label, "score": score, "posts": posts[:3], "available": True}
+
+
+def get_reddit_sentiment():
+    now = time.time()
+    cached = reddit_cache["data"]
+    if cached is not None and now - reddit_cache["timestamp"] < REDDIT_CACHE_SECONDS:
+        return cached
+
+    fresh = fetch_reddit_sentiment()
+    reddit_cache["timestamp"] = now
+    reddit_cache["data"] = fresh
+    return fresh
 
 
 def analyze_market():
@@ -177,19 +204,24 @@ def analyze_market():
 
     if technical_signal == "LONG":
         confidence += 15 if news["label"] == "POSITIVE" else -20 if news["label"] == "NEGATIVE" else 0
-        confidence += 15 if reddit["label"] == "POSITIVE" else -10 if reddit["label"] == "NEGATIVE" else 0
+        if reddit["available"]:
+            confidence += 15 if reddit["label"] == "POSITIVE" else -10 if reddit["label"] == "NEGATIVE" else 0
     elif technical_signal == "SHORT":
         confidence += 15 if news["label"] == "NEGATIVE" else -20 if news["label"] == "POSITIVE" else 0
-        confidence += 15 if reddit["label"] == "NEGATIVE" else -10 if reddit["label"] == "POSITIVE" else 0
+        if reddit["available"]:
+            confidence += 15 if reddit["label"] == "NEGATIVE" else -10 if reddit["label"] == "POSITIVE" else 0
 
     confidence = max(0, min(100, confidence))
     if technical_signal in ("LONG", "SHORT") and confidence < 70:
         signal = "WAIT"
-        reasons.append("News/social context reduced confidence below alert threshold")
+        reasons.append("Context reduced confidence below alert threshold")
 
     if technical_signal in ("LONG", "SHORT"):
         reasons.append(f'News: {news["label"]} ({news["score"]:+d})')
-        reasons.append(f'Reddit: {reddit["label"]} ({reddit["score"]:+d})')
+        if reddit["available"]:
+            reasons.append(f'Reddit: {reddit["label"]} ({reddit["score"]:+d})')
+        else:
+            reasons.append("Reddit unavailable; excluded from confidence")
 
     risk_distance = price * 0.01
     stop_loss = price - risk_distance if signal == "LONG" else price + risk_distance if signal == "SHORT" else None
@@ -215,14 +247,17 @@ while True:
 
         if signal in ("LONG", "SHORT") and signal != last_signal:
             news_text = "\n".join(f"- {x}" for x in analysis["news"]["headlines"]) or "No relevant headlines found"
-            reddit_text = "\n".join(f"- {x}" for x in analysis["reddit"]["posts"]) or "No relevant Reddit posts found"
+            if analysis["reddit"]["available"]:
+                reddit_text = "\n".join(f"- {x}" for x in analysis["reddit"]["posts"]) or "No relevant Reddit posts found"
+            else:
+                reddit_text = "Reddit unavailable/rate-limited; excluded from confidence"
             message = (
                 f'BTC/USD SIGNAL: {signal}\nEntry reference: {analysis["price"]:.2f}\n'
                 f'Stop Loss: {analysis["stop_loss"]:.2f}\nTake Profit: {analysis["take_profit"]:.2f}\n'
                 f'Confidence: {analysis["confidence"]}%\nRSI(14): {analysis["rsi"]:.1f}\n'
                 f'Volume ratio: {analysis["volume_ratio"]:.2f}x\n'
                 f'News: {analysis["news"]["label"]} ({analysis["news"]["score"]:+d})\n'
-                f'Reddit: {analysis["reddit"]["label"]} ({analysis["reddit"]["score"]:+d})\n'
+                f'Reddit: {analysis["reddit"]["label"]}\n'
                 f'Why: {"; ".join(analysis["reasons"])}\n\nNews:\n{news_text}\n\nReddit:\n{reddit_text}\n\n'
                 'Analysis alert only - no trade was executed.'
             )
