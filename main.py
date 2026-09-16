@@ -1,9 +1,29 @@
 import os
 import time
+import re
+import xml.etree.ElementTree as ET
 import requests
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+
+NEWS_FEEDS = [
+    "https://www.coindesk.com/arc/outboundfeeds/rss/",
+    "https://cointelegraph.com/rss",
+]
+
+POSITIVE_NEWS_WORDS = {
+    "approval", "approved", "adoption", "bullish", "surge", "rally", "record",
+    "inflows", "buying", "growth", "breakout", "launch", "partnership", "easing",
+}
+NEGATIVE_NEWS_WORDS = {
+    "hack", "hacked", "exploit", "ban", "lawsuit", "crackdown", "bearish", "plunge",
+    "selloff", "outflows", "liquidation", "fraud", "breach", "rejection", "tightening",
+}
+BTC_NEWS_WORDS = {
+    "bitcoin", "btc", "crypto", "cryptocurrency", "etf", "sec", "fed", "federal reserve",
+    "inflation", "interest rate", "rates", "cpi", "tariff", "regulation",
+}
 
 
 def send_telegram_message(message):
@@ -63,6 +83,53 @@ def rsi(values, period=14):
     return 100 - (100 / (1 + rs))
 
 
+def clean_text(text):
+    return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", text or "")).strip()
+
+
+def get_news_sentiment():
+    headlines = []
+
+    for feed_url in NEWS_FEEDS:
+        try:
+            response = requests.get(
+                feed_url,
+                timeout=10,
+                headers={"User-Agent": "Mozilla/5.0 ia-crypto-bot/1.0"},
+            )
+            response.raise_for_status()
+            root = ET.fromstring(response.content)
+
+            for item in root.findall(".//item")[:15]:
+                title = clean_text(item.findtext("title"))
+                description = clean_text(item.findtext("description"))
+                text = f"{title} {description}".lower()
+                if any(word in text for word in BTC_NEWS_WORDS):
+                    headlines.append(title)
+        except (requests.exceptions.RequestException, ET.ParseError) as e:
+            print(f"News feed error ({feed_url}): {e}")
+
+    # Remove duplicate headlines while preserving order.
+    headlines = list(dict.fromkeys(headlines))[:20]
+    if not headlines:
+        return {"label": "NEUTRAL", "score": 0, "headlines": []}
+
+    score = 0
+    for headline in headlines:
+        words = headline.lower()
+        score += sum(1 for word in POSITIVE_NEWS_WORDS if word in words)
+        score -= sum(1 for word in NEGATIVE_NEWS_WORDS if word in words)
+
+    if score >= 2:
+        label = "POSITIVE"
+    elif score <= -2:
+        label = "NEGATIVE"
+    else:
+        label = "NEUTRAL"
+
+    return {"label": label, "score": score, "headlines": headlines[:3]}
+
+
 def analyze_market():
     klines = get_binance_klines()
     if not klines or len(klines) < 50:
@@ -80,23 +147,39 @@ def analyze_market():
     avg_volume = sum(volumes[-21:-1]) / 20
     volume_ratio = volumes[-1] / avg_volume if avg_volume else 0
 
-    signal = "WAIT"
+    technical_signal = "WAIT"
     reasons = []
 
     if price > ema20 > ema50 and rsi14 is not None and 52 <= rsi14 <= 70 and volume_ratio >= 1.05:
-        signal = "LONG"
-        reasons.append("Price and EMA20 are above EMA50")
-        reasons.append("RSI confirms bullish momentum")
-        reasons.append("Volume is above its recent average")
+        technical_signal = "LONG"
+        reasons.extend([
+            "Price and EMA20 are above EMA50",
+            "RSI confirms bullish momentum",
+            "Volume is above its recent average",
+        ])
     elif price < ema20 < ema50 and rsi14 is not None and 30 <= rsi14 <= 48 and volume_ratio >= 1.05:
-        signal = "SHORT"
-        reasons.append("Price and EMA20 are below EMA50")
-        reasons.append("RSI confirms bearish momentum")
-        reasons.append("Volume is above its recent average")
+        technical_signal = "SHORT"
+        reasons.extend([
+            "Price and EMA20 are below EMA50",
+            "RSI confirms bearish momentum",
+            "Volume is above its recent average",
+        ])
     else:
         reasons.append("No high-confidence technical setup yet")
 
-    # Informational levels only; no orders are placed.
+    news = get_news_sentiment()
+    signal = technical_signal
+
+    # News is a confirmation/risk filter, never a standalone trading trigger.
+    if technical_signal == "LONG" and news["label"] == "NEGATIVE":
+        signal = "WAIT"
+        reasons.append("Negative news sentiment conflicts with LONG setup")
+    elif technical_signal == "SHORT" and news["label"] == "POSITIVE":
+        signal = "WAIT"
+        reasons.append("Positive news sentiment conflicts with SHORT setup")
+    elif technical_signal in ("LONG", "SHORT"):
+        reasons.append(f'News sentiment: {news["label"]} ({news["score"]:+d})')
+
     risk_distance = price * 0.01
     if signal == "LONG":
         stop_loss = price - risk_distance
@@ -110,6 +193,7 @@ def analyze_market():
 
     return {
         "signal": signal,
+        "technical_signal": technical_signal,
         "price": price,
         "ema20": ema20,
         "ema50": ema50,
@@ -118,6 +202,7 @@ def analyze_market():
         "stop_loss": stop_loss,
         "take_profit": take_profit,
         "reasons": reasons,
+        "news": news,
     }
 
 
@@ -129,12 +214,14 @@ while True:
     if analysis:
         signal = analysis["signal"]
         print(
-            f'BTCUSDT: {analysis["price"]:.2f} | '
-            f'Signal: {signal} | RSI: {analysis["rsi"]:.1f}'
+            f'BTCUSDT: {analysis["price"]:.2f} | Signal: {signal} | '
+            f'RSI: {analysis["rsi"]:.1f} | News: {analysis["news"]["label"]}'
         )
 
-        # Send only when a new actionable signal appears, avoiding Telegram spam.
         if signal in ("LONG", "SHORT") and signal != last_signal:
+            news_titles = analysis["news"]["headlines"]
+            news_text = "\n".join(f"- {title}" for title in news_titles) if news_titles else "No relevant headlines found"
+
             message = (
                 f'BTC/USDT SIGNAL: {signal}\n'
                 f'Entry reference: {analysis["price"]:.2f}\n'
@@ -142,7 +229,9 @@ while True:
                 f'Take Profit: {analysis["take_profit"]:.2f}\n'
                 f'RSI(14): {analysis["rsi"]:.1f}\n'
                 f'Volume ratio: {analysis["volume_ratio"]:.2f}x\n'
+                f'News sentiment: {analysis["news"]["label"]} ({analysis["news"]["score"]:+d})\n'
                 f'Why: {"; ".join(analysis["reasons"])}\n\n'
+                f'Recent relevant headlines:\n{news_text}\n\n'
                 'Analysis alert only - no trade was executed.'
             )
             send_telegram_message(message)
