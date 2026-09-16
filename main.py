@@ -1,5 +1,5 @@
 import requests
-
+import time
 
 def get_btc_price():
     url = "https://api.coinbase.com/v2/prices/BTC-USD/spot"
@@ -28,12 +28,15 @@ def get_btc_price():
         return None, None
 
 
-# تشغيل البرنامج
-price, currency = get_btc_price()
+# تشغيل البوت باستمرار
+while True:
+    price, currency = get_btc_price()
 
-if price is not None:
-    print("--------------------------------")
-    print("     Bitcoin Current Price")
-    print("--------------------------------")
-    print(f"BTC/USD: {price} {currency}")
-    print("--------------------------------")
+    if price is not None:
+        print("------------------------------")
+        print("Bitcoin Current Price")
+        print("------------------------------")
+        print(f"BTC/USD: {price} {currency}")
+        print("------------------------------")
+
+    time.sleep(60)
