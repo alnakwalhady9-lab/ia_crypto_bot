@@ -41,9 +41,11 @@ def tg_send(cid,m):
 def send(m):
  for cid in list(SUBSCRIBERS):tg_send(cid,m)
 def trade_send(m):
- # Paper results stay in Railway logs for auditing; subscribers receive no trade alerts.
+ # Paper results are logged and clearly labelled in Telegram.
  clean=str(m).replace('\\n',' | ')
- if PAPER_MODE:print('PAPER RESULT:',clean)
+ if PAPER_MODE:
+  print('PAPER RESULT:',clean)
+  send('🧪 نتيجة صفقة تجريبية — لا تدخل بأموال حقيقية\\n'+str(m))
  else:send(m)
 def poll_commands():
  global telegram_offset,INVITE_CODE
@@ -431,9 +433,9 @@ while True:
    immediate=(not has_active) and x['side'] in ('BUY','SELL') and x['side']!=last
    opened=open_signal(x) if immediate else False
    if PAPER_MODE:
-    if periodic:
-     send('🧪 GOLD BOT في وضع الاختبار الآمن.\\nتم إيقاف إشارات الدخول مؤقتًا لحين اكتمال اختبار الأداء.\\nلن تُرسل أي صفقة حقيقية الآن.')
-     last_report=now
+    if opened:
+     send('🧪 صفقة تجريبية — لا تدخل بأموال حقيقية\\n\\n'+msg(x))
+    if periodic:last_report=now
    elif periodic or opened:
     send(msg(x))
     if periodic:last_report=now
