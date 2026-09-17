@@ -393,7 +393,7 @@ def msg(x):
 def stats_text():
  h=state['history'];n=len(h);w=sum(x.get('max_tp',0)>=1 for x in h);t3=sum(x.get('max_tp',0)>=3 for x in h)
  return f'📊 سجل التعلم: {n} مغلقة | TP1+ {w} ({w/n*100:.1f}%) | TP3 {t3}' if n else '📊 سجل التعلم: لا توجد نتائج مغلقة بعد'
-def open_signal(x):
+def open_signal(x,live=None):
  if time.time()-STARTED_AT<900:
   print('SIGNAL BLOCKED: 15-minute startup safety window')
   return False
@@ -407,14 +407,26 @@ def open_signal(x):
  if time.time()-float(state.get('last_closed_at') or 0)<900:
   print('SIGNAL BLOCKED: 15-minute cooldown after the last closed trade')
   return False
- sig={'id':state['next_id'],'side':x['side'],'entry':x['p'],'sl':x['sl'],'tps':[x['tp1'],x['tp2'],x['tp3']],'hit':[False]*3,'max_tp':0,'features':x['features'],'buy_pct':x['bp'],'sell_pct':x['sp'],'opened_at':time.time(),'opened_bar':bar};state['next_id']+=1;state['last_open_bar']=bar;state['active'].append(sig);save_state();print(f'PAPER OPEN #{sig["id"]} {sig["side"]} entry={sig["entry"]:.2f} sl={sig["sl"]:.2f} tp1={sig["tps"][0]:.2f} tp2={sig["tps"][1]:.2f} tp3={sig["tps"][2]:.2f}');return True
+ entry=float(live['c']) if live else float(x['p'])
+ drift=entry-float(x['p']);a=float(x['a'])
+ adverse=(x['side']=='BUY' and drift<-.15*a) or (x['side']=='SELL' and drift>.15*a)
+ if adverse or abs(drift)>.35*a:
+  print(f'SIGNAL BLOCKED: live price drifted from analyzed close drift={drift:.2f} ATR={a:.2f}')
+  return False
+ sl_dist=abs(float(x['p'])-float(x['sl']));tp_dist=[abs(float(t)-float(x['p'])) for t in (x['tp1'],x['tp2'],x['tp3'])]
+ sl=entry-sl_dist if x['side']=='BUY' else entry+sl_dist
+ tps=[entry+d for d in tp_dist] if x['side']=='BUY' else [entry-d for d in tp_dist]
+ sig={'id':state['next_id'],'side':x['side'],'entry':entry,'sl':sl,'tps':tps,'hit':[False]*3,'max_tp':0,'features':x['features'],'buy_pct':x['bp'],'sell_pct':x['sp'],'opened_at':time.time(),'opened_bar':bar,'opened_live_t':str((live or {}).get('t',''))};state['next_id']+=1;state['last_open_bar']=bar;state['active'].append(sig);save_state();print(f'PAPER OPEN #{sig["id"]} {sig["side"]} entry={sig["entry"]:.2f} sl={sig["sl"]:.2f} tp1={sig["tps"][0]:.2f} tp2={sig["tps"][1]:.2f} tp3={sig["tps"][2]:.2f}');return True
 def close_signal(sig,result,price):
  global last
  sig['result']=result;sig['exit_price']=price;sig['closed_at']=time.time();state['history'].append(sig.copy());state['history']=state['history'][-500:];state['active'].remove(sig);last=None;save_state();learn()
 def track_live(c):
  if not state['active'] or not c:return
- hi,lo=c['h'],c['l']
  for sig in list(state['active']):
+  # On the opening candle, its recorded high/low may predate the entry.
+  # Use only the live price until a new candle begins.
+  same_candle=str(c.get('t',''))==str(sig.get('opened_live_t',''))
+  hi=lo=float(c['c']) if same_candle else (float(c['h']),float(c['l']))
   stop=lo<=sig['sl'] if sig['side']=='BUY' else hi>=sig['sl']
   tp3=hi>=sig['tps'][2] if sig['side']=='BUY' else lo<=sig['tps'][2]
   # If SL and TP3 are both inside the same 1m candle, ordering is unknown: record the conservative SL outcome.
@@ -442,7 +454,7 @@ while True:
    has_active=bool(state['active'])
    periodic=last_report==0 or now-last_report>=REPORT
    immediate=(not has_active) and x['side'] in ('BUY','SELL') and x['side']!=last
-   opened=open_signal(x) if immediate else False
+   opened=open_signal(x,live) if immediate else False
    if PAPER_MODE:
     if opened:
      send('🧪 صفقة تجريبية — لا تدخل بأموال حقيقية\\n\\n'+msg(x))
