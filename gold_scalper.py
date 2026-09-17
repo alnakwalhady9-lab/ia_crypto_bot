@@ -1,10 +1,14 @@
-import os,time,json,requests,uuid
+import os,time,json,requests,uuid,re,xml.etree.ElementTree as ET
+from urllib.parse import quote_plus
 TOKEN=os.getenv('GOLD_TELEGRAM_BOT_TOKEN');CHAT=os.getenv('GOLD_TELEGRAM_CHAT_ID');KEY=os.getenv('ALLTICK_API_TOKEN');INVITE=os.getenv('GOLD_INVITE_CODE')
 URL='https://quote.alltick.co/quote-b-api/kline';REPORT=900;cache={};TTL={'5min':300,'15min':900,'1h':3600}
 KLINE_TYPE={'5min':2,'15min':3,'1h':5}
 MIN_API_GAP=11;last_api_request=0
 DATA_DIR='/data' if os.path.isdir('/data') and os.access('/data',os.W_OK) else '.';STATE_FILE=os.path.join(DATA_DIR,'gold_learning_state.json');SUB_FILE=os.path.join(DATA_DIR,'gold_subscribers.json')
 BASE={'trend5':14,'trend15':16,'trend1h':5,'structure5':14,'structure15':10,'liquidity':20,'equal_liq':4,'price_action':12,'breakout':18,'harmonic5':18,'harmonic15':12,'rsi':7}
+NEWS_REFRESH=180;NEWS_BLOCK_MINUTES=30;news_cache={'t':0,'v':{'bias':'NEUTRAL','score':0,'block':False,'headline':'لا خبر عاجل مؤكد','items':[]}};news_seen=set()
+ESCALATION={'attack','attacks','strike','strikes','bomb','missile','drone','retaliation','escalat','blockade','hormuz','killed','war expands','military action','threatens'}
+EASING={'ceasefire','deal','talks','negotiat','peace','war nearing end','towards end','toward end','de-escalat','agreement','diplomacy'}
 def load_subscribers():
  s=set([str(CHAT)]) if CHAT else set()
  try:
@@ -206,6 +210,43 @@ def harmonic(c):
   elif .70<=AB/CD<=1.30 and .45<=bc<=.90:name='ABCD'
   if name:best={'name':name,'side':'BUY' if P[-1][2]=='L' else 'SELL'}
  return best
+def geopolitical_news():
+ global news_cache
+ now=time.time()
+ if now-news_cache['t']<NEWS_REFRESH:return news_cache['v']
+ query=quote_plus('(Trump Iran) OR (Iran war) OR (Strait of Hormuz) OR (Israel Iran) when:1h')
+ url=f'https://news.google.com/rss/search?q={query}&hl=en-US&gl=US&ceid=US:en'
+ items=[];score=0
+ try:
+  r=requests.get(url,timeout=(5,15),headers={'User-Agent':'Mozilla/5.0 GOLD-SCALPER/3.0'});r.raise_for_status()
+  root=ET.fromstring(r.content)
+  for item in root.findall('.//item')[:25]:
+   title=re.sub(r'\\s+',' ',item.findtext('title') or '').strip()
+   pub=item.findtext('pubDate') or ''
+   low=title.lower()
+   if not title or not any(k in low for k in ('iran','trump','hormuz','israel','gulf','houthi')):continue
+   esc=sum(1 for k in ESCALATION if k in low);ease=sum(1 for k in EASING if k in low)
+   impact=esc-ease
+   if impact:items.append({'title':title,'impact':impact,'pub':pub});score+=max(-2,min(2,impact))
+  bias='ESCALATION' if score>=2 else 'EASING' if score<=-2 else 'NEUTRAL'
+  # Any new strongly market-moving Iran headline makes technical entries unsafe
+  # for 30 minutes. Existing trades remain tracked; only new entries are blocked.
+  strong=next((x for x in items if abs(x['impact'])>=1),None)
+  v={'bias':bias,'score':score,'block':bool(strong),'headline':strong['title'] if strong else 'لا خبر عاجل مؤكد','items':items[:8]}
+  news_cache={'t':now,'v':v};return v
+ except Exception as e:
+  print('NEWS error:',type(e).__name__)
+  return news_cache['v']
+
+def notify_breaking(news):
+ if not news.get('block'):return
+ title=news.get('headline','')
+ if not title or title in news_seen:return
+ news_seen.add(title)
+ if len(news_seen)>100:news_seen.clear();news_seen.add(title)
+ mood='تصعيد — دعم محتمل للذهب' if news['bias']=='ESCALATION' else 'تهدئة — ضغط محتمل على الذهب' if news['bias']=='EASING' else 'متضارب'
+ send(f'🚨 خبر عاجل مؤثر على الذهب\\n{title}\\n📰 التصنيف: {mood}\\n⛔ تم تعليق أي إشارة دخول جديدة مؤقتاً، والصفقة المفتوحة إن وجدت تظل تحت المتابعة.')
+
 def default_state():return {'next_id':1,'active':[],'history':[],'weights':{k:1.0 for k in BASE},'last_learn_count':0}
 def load_state():
  try:
@@ -268,6 +309,9 @@ def analyze():
  if h15:add('harmonic15',h15['side'],f'Harmonic 15m {h15["name"]} {h15["side"]}')
  if s5['r']<35:add('rsi','BUY')
  elif s5['r']>65:add('rsi','SELL')
+ news=geopolitical_news()
+ if news['bias']=='ESCALATION':buy+=18;why.append('خبر جيوسياسي تصعيدي — دعم محتمل للذهب')
+ elif news['bias']=='EASING':sell+=18;why.append('خبر تهدئة/اتفاق — ضغط محتمل على الذهب')
  total=max(buy+sell,1);bp=round(100*buy/total);sp=100-bp;side='BUY' if bp>=65 and buy>=sell+W('price_action') else 'SELL' if sp>=65 and sell>=buy+W('price_action') else 'WAIT'
  # 15m and 1h define the market direction.  The 5m chart is entry timing
  # only: a counter-trend RSI, liquidity sweep or harmonic pattern can no
@@ -278,6 +322,7 @@ def analyze():
   side='WAIT';why.append('منع SELL: اتجاه 15m و1h غير هابط معًا')
  ranges=[x['h']-x['l'] for x in s5['c'][-15:-1]];spike=(s5['c'][-1]['h']-s5['c'][-1]['l'])>max(sum(ranges)/len(ranges)*2.5,a*2)
  if spike:side='WAIT';why.append('تقلب غير طبيعي — حماية الدخول')
+ if news['block']:side='WAIT';why.append('خبر عاجل مؤثر — تعليق الدخول 30 دقيقة')
  sl=p-1.15*a if side=='BUY' else p+1.15*a if side=='SELL' else None;tp1=p+1.1*a if side=='BUY' else p-1.1*a if side=='SELL' else None;tp2=p+1.7*a if side=='BUY' else p-1.7*a if side=='SELL' else None;tp3=p+2.4*a if side=='BUY' else p-2.4*a if side=='SELL' else None;features=fb if side=='BUY' else fs if side=='SELL' else []
  return locals()
 def ar(x):return {'BUY':'🟢 شراء','SELL':'🔴 بيع','WAIT':'🟡 انتظار','UP':'صاعد','DOWN':'هابط','MIXED':'مختلط','BULLISH':'صاعد','BEARISH':'هابط','RANGE':'عرضي','NEUTRAL':'محايد'}.get(x,x)
@@ -291,7 +336,7 @@ def msg(x):
   risk='لا دخول مؤكد حاليًا' if x['side']=='WAIT' else f'📍 Entry محتمل: {x["p"]:.2f}\n🛑 SL: {x["sl"]:.2f}\n🎯 TP1: {x["tp1"]:.2f} (+{gold_pips(x["p"],x["tp1"])} pips)\n🎯 TP2: {x["tp2"]:.2f} (+{gold_pips(x["p"],x["tp2"])} pips)\n🎯 TP3: {x["tp3"]:.2f} (+{gold_pips(x["p"],x["tp3"])} pips)'
   status='⚠️ تحليل احتمالي فقط — لا توجد صفقة مفتوحة.'
  h5=x['h5']['name']+' '+ar(x['h5']['side']) if x['h5'] else 'لا يوجد';h15=x['h15']['name']+' '+ar(x['h15']['side']) if x['h15'] else 'لا يوجد'
- return f'🥇 GOLD SCALPER PRO\n\n🎯 القرار: {ar(x["side"])}\n💰 XAU/USD: {x["p"]:.2f}\n🟢 ميل الشراء: {x["bp"]}% | 🔴 ميل البيع: {x["sp"]}%\n📐 كلاسيكي 5m: {ar(x["st5"])} | 15m: {ar(x["st15"])}\n📊 EMA 5m/15m/1h: {ar(x["t5"])} / {ar(x["t15"])} / {ar(x["t1"])}\n🕯 Price Action: {ar(x["pa"])}\n💧 Liquidity: {"Sweep BUY" if x["liq"]["buy"] else "Sweep SELL" if x["liq"]["sell"] else "لا Sweep مؤكد"}\n🟢 دعم: {x["sup"]:.2f} | 🔴 مقاومة: {x["res"]:.2f}\n🧬 Harmonic 5m: {h5}\n🧬 Harmonic 15m: {h15}\n📈 RSI: {x["s5"]["r"]:.1f} | ATR: {x["a"]:.2f}\n\n{risk}\n🧠 التوافق: {"؛ ".join(x["why"][:7]) if x["why"] else "توافق ضعيف"}\n🧠 Adaptive learning: ON\n{status}'
+ return f'🥇 GOLD SCALPER PRO\n\n🎯 القرار: {ar(x["side"])}\n💰 XAU/USD: {x["p"]:.2f}\n🟢 ميل الشراء: {x["bp"]}% | 🔴 ميل البيع: {x["sp"]}%\n📐 كلاسيكي 5m: {ar(x["st5"])} | 15m: {ar(x["st15"])}\n📊 EMA 5m/15m/1h: {ar(x["t5"])} / {ar(x["t15"])} / {ar(x["t1"])}\n🕯 Price Action: {ar(x["pa"])}\n💧 Liquidity: {"Sweep BUY" if x["liq"]["buy"] else "Sweep SELL" if x["liq"]["sell"] else "لا Sweep مؤكد"}\n🟢 دعم: {x["sup"]:.2f} | 🔴 مقاومة: {x["res"]:.2f}\n🧬 Harmonic 5m: {h5}\n🧬 Harmonic 15m: {h15}\n📈 RSI: {x["s5"]["r"]:.1f} | ATR: {x["a"]:.2f}\n📰 أخبار إيران/ترامب: {{"ESCALATION":"🔴 تصعيد","EASING":"🟢 تهدئة","NEUTRAL":"⚪ محايد"}.get(x["news"]["bias"],"⚪ محايد")}\n📣 {x["news"]["headline"][:160]}\n\n{risk}\n🧠 التوافق: {"؛ ".join(x["why"][:7]) if x["why"] else "توافق ضعيف"}\n🧠 Adaptive learning: ON\n{status}'
 def stats_text():
  h=state['history'];n=len(h);w=sum(x.get('max_tp',0)>=1 for x in h);t3=sum(x.get('max_tp',0)>=3 for x in h)
  return f'📊 سجل التعلم: {n} مغلقة | TP1+ {w} ({w/n*100:.1f}%) | TP3 {t3}' if n else '📊 سجل التعلم: لا توجد نتائج مغلقة بعد'
@@ -322,6 +367,7 @@ state=load_state();print('Gold learning state:',STATE_FILE,'history=',len(state[
 last=None;last_report=0;last_analysis=0
 while True:
  poll_commands()
+ breaking=geopolitical_news();notify_breaking(breaking)
  live=fetch_live()
  if live:
   track_live(live);print(f'LIVE XAU {live["c"]:.2f} H={live["h"]:.2f} L={live["l"]:.2f} active={len(state["active"])}')
