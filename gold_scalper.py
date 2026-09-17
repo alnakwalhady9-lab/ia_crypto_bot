@@ -3,6 +3,7 @@ from urllib.parse import quote_plus
 TOKEN=os.getenv('GOLD_TELEGRAM_BOT_TOKEN');CHAT=os.getenv('GOLD_TELEGRAM_CHAT_ID');KEY=os.getenv('ALLTICK_API_TOKEN');INVITE=os.getenv('GOLD_INVITE_CODE')
 # Safety default: paper-test every signal and never broadcast entries until explicitly approved.
 PAPER_MODE=os.getenv('GOLD_PAPER_MODE','true').strip().lower() not in ('0','false','off','no')
+STARTED_AT=time.time()
 URL='https://quote.alltick.co/quote-b-api/kline';REPORT=900;cache={};TTL={'5min':300,'15min':900,'1h':3600}
 KLINE_TYPE={'5min':2,'15min':3,'1h':5}
 MIN_API_GAP=11;last_api_request=0
@@ -393,6 +394,9 @@ def stats_text():
  h=state['history'];n=len(h);w=sum(x.get('max_tp',0)>=1 for x in h);t3=sum(x.get('max_tp',0)>=3 for x in h)
  return f'📊 سجل التعلم: {n} مغلقة | TP1+ {w} ({w/n*100:.1f}%) | TP3 {t3}' if n else '📊 سجل التعلم: لا توجد نتائج مغلقة بعد'
 def open_signal(x):
+ if time.time()-STARTED_AT<900:
+  print('SIGNAL BLOCKED: 15-minute startup safety window')
+  return False
  if state['active']:
   print('SIGNAL BLOCKED: an earlier gold signal is still active')
   return False
