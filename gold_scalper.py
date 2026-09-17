@@ -73,7 +73,7 @@ def poll_commands():
     if cid in SUBSCRIBERS and cid!=str(CHAT):
      SUBSCRIBERS.remove(cid);save_subscribers()
     tg_send(cid,'⛔ تم إيقاف إشارات الذهب.')
- except Exception as e:print('Telegram updates',e)
+ except Exception as e:print('Telegram updates error:',type(e).__name__)
 def fetch(sym,tf,n=200):
     global last_api_request
     k=f'{sym}:{tf}';now=time.time()
