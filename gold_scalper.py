@@ -2,6 +2,7 @@ import os,time,json,requests,uuid
 TOKEN=os.getenv('GOLD_TELEGRAM_BOT_TOKEN');CHAT=os.getenv('GOLD_TELEGRAM_CHAT_ID');KEY=os.getenv('ALLTICK_API_TOKEN');INVITE=os.getenv('GOLD_INVITE_CODE')
 URL='https://quote.alltick.co/quote-b-api/kline';REPORT=900;cache={};TTL={'5min':300,'15min':900,'1h':3600}
 KLINE_TYPE={'5min':2,'15min':3,'1h':5}
+MIN_API_GAP=11;last_api_request=0
 DATA_DIR='/data' if os.path.isdir('/data') and os.access('/data',os.W_OK) else '.';STATE_FILE=os.path.join(DATA_DIR,'gold_learning_state.json');SUB_FILE=os.path.join(DATA_DIR,'gold_subscribers.json')
 BASE={'trend5':14,'trend15':16,'trend1h':5,'structure5':14,'structure15':10,'liquidity':20,'equal_liq':4,'price_action':12,'breakout':18,'harmonic5':18,'harmonic15':12,'rsi':7}
 def load_subscribers():
@@ -43,6 +44,7 @@ def poll_commands():
     tg_send(cid,'⛔ تم إيقاف إشارات الذهب.')
  except Exception as e:print('Telegram updates',e)
 def fetch(sym,tf,n=200):
+    global last_api_request
     k=f'{sym}:{tf}';now=time.time()
     if k in cache and now-cache[k][0]<TTL[tf]: return cache[k][1]
     try:
@@ -59,12 +61,21 @@ def fetch(sym,tf,n=200):
                 'adjust_type':0
             }
         }
+        wait_for=MIN_API_GAP-(time.time()-last_api_request)
+        if wait_for>0:
+            time.sleep(wait_for)
+        last_api_request=time.time()
         r=requests.get(
             URL,
             params={'token':KEY,'query':json.dumps(query,separators=(',',':'))},
             timeout=(5,20)
         )
-        r.raise_for_status()
+        if r.status_code==429:
+            print('AllTick rate limit (429); retrying later')
+            return cache.get(k,(0,None))[1]
+        if not r.ok:
+            print('AllTick HTTP error:',r.status_code)
+            return cache.get(k,(0,None))[1]
         payload=r.json()
         rows=(payload.get('data') or {}).get('kline_list') or []
         out=[]
@@ -86,7 +97,7 @@ def fetch(sym,tf,n=200):
         cache[k]=(now,out)
         return out
     except Exception as e:
-        print('AllTick error:',e)
+        print('AllTick error:',type(e).__name__)
         return cache.get(k,(0,None))[1]
 
 def fetch_live():
