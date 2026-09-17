@@ -19,7 +19,9 @@ def fetch(sym,tf,n=200):
    except:pass
   if out:cache[k]=(now,out)
   return out or None
- except Exception as e:print('Data',e);return None
+ except Exception as e:
+  cache[k]=(now,None)  # Back off by the timeframe TTL after 429/network failures.
+  print('Data',e);return None
 def fetch_live():
  # Reuse the cached 5m feed instead of spending one API request every 15 seconds.
  # This keeps Twelve Data usage safely below the daily quota.
