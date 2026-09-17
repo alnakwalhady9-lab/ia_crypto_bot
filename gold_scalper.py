@@ -20,6 +20,15 @@ def fetch(sym,tf,n=200):
   if out:cache[k]=(now,out)
   return out or None
  except Exception as e:print('Data',e);return None
+def fetch_live():
+ try:
+  r=requests.get(URL,params={'symbol':'XAU/USD','interval':'1min','outputsize':2,'apikey':KEY,'format':'JSON'},timeout=15);r.raise_for_status();d=r.json()
+  if d.get('status')=='error':print('TD LIVE',d.get('message'));return None
+  v=d.get('values',[])
+  if not v:return None
+  z=v[0]
+  return {'t':z.get('datetime'),'o':float(z['open']),'h':float(z['high']),'l':float(z['low']),'c':float(z['close'])}
+ except Exception as e:print('LiveData',e);return None
 def ema(v,p):
  k=2/(p+1);x=v[0]
  for z in v[1:]:x=z*k+x*(1-k)
@@ -166,24 +175,34 @@ def open_signal(x):
  sig={'id':state['next_id'],'side':x['side'],'entry':x['p'],'sl':x['sl'],'tps':[x['tp1'],x['tp2'],x['tp3']],'hit':[False]*3,'max_tp':0,'features':x['features'],'buy_pct':x['bp'],'sell_pct':x['sp'],'opened_at':time.time()};state['next_id']+=1;state['active'].append(sig);save_state()
 def close_signal(sig,result,price):
  sig['result']=result;sig['exit_price']=price;sig['closed_at']=time.time();state['history'].append(sig.copy());state['history']=state['history'][-500:];state['active'].remove(sig);save_state();learn()
-def track(x):
- if not state['active']:return
- c=x['s5']['c'][-1];hi,lo=c['h'],c['l']
+def track_live(c):
+ if not state['active'] or not c:return
+ hi,lo=c['h'],c['l']
  for sig in list(state['active']):
+  stop=lo<=sig['sl'] if sig['side']=='BUY' else hi>=sig['sl']
+  tp3=hi>=sig['tps'][2] if sig['side']=='BUY' else lo<=sig['tps'][2]
+  # If SL and TP3 are both inside the same 1m candle, ordering is unknown: record the conservative SL outcome.
+  if stop and tp3:
+   close_signal(sig,'SL_AMBIGUOUS',sig['sl']);send(f'❌ GOLD SIGNAL #{sig["id"]} — SL HIT (نفس شمعة TP/SL)\n{stats_text()}');continue
   touch=(lambda z:hi>=z) if sig['side']=='BUY' else (lambda z:lo<=z)
   for i,t in enumerate(sig['tps']):
-   if not sig['hit'][i] and touch(t):sig['hit'][i]=True;sig['max_tp']=max(sig['max_tp'],i+1);save_state();send(f'✅ GOLD SIGNAL #{sig["id"]} — TP{i+1} HIT\n🎯 الهدف: {t:.2f}')
+   if not sig['hit'][i] and touch(t):
+    sig['hit'][i]=True;sig['max_tp']=max(sig['max_tp'],i+1);save_state();send(f'✅ GOLD SIGNAL #{sig["id"]} — TP{i+1} HIT\n🎯 الهدف: {t:.2f}')
   if sig['hit'][2]:close_signal(sig,'TP3',sig['tps'][2]);send(f'🏁 GOLD SIGNAL #{sig["id"]} اكتملت — TP3\n{stats_text()}');continue
-  stop=lo<=sig['sl'] if sig['side']=='BUY' else hi>=sig['sl']
   if stop:close_signal(sig,'SL_AFTER_TP'+str(sig['max_tp']) if sig['max_tp'] else 'SL',sig['sl']);send(f'❌ GOLD SIGNAL #{sig["id"]} — SL HIT\n🎯 أعلى هدف: TP{sig["max_tp"]}\n{stats_text()}')
-state=load_state();print('Gold learning state:',STATE_FILE,'history=',len(state['history']),'weights=',state['weights'])
-last=None;last_report=0
+state=load_state();print('Gold learning state:',STATE_FILE,'history=',len(state['history']),'active=',len(state['active']),'weights=',state['weights'])
+last=None;last_report=0;last_analysis=0
 while True:
- x=analyze()
- if x:
-  track(x);now=time.time();print(f'XAU {x["p"]:.2f} {x["side"]} BUY={x["bp"]}% SELL={x["sp"]}%')
-  periodic=last_report==0 or now-last_report>=REPORT;immediate=x['side'] in ('BUY','SELL') and x['side']!=last
-  if periodic or immediate:send(msg(x));last_report=now if periodic else last_report
-  if immediate:open_signal(x)
-  last=x['side']
- time.sleep(30)
+ live=fetch_live()
+ if live:
+  track_live(live);print(f'LIVE XAU {live["c"]:.2f} H={live["h"]:.2f} L={live["l"]:.2f} active={len(state["active"])}')
+ now=time.time()
+ if now-last_analysis>=30:
+  x=analyze();last_analysis=now
+  if x:
+   print(f'XAU {x["p"]:.2f} {x["side"]} BUY={x["bp"]}% SELL={x["sp"]}%')
+   periodic=last_report==0 or now-last_report>=REPORT;immediate=x['side'] in ('BUY','SELL') and x['side']!=last
+   if periodic or immediate:send(msg(x));last_report=now if periodic else last_report
+   if immediate:open_signal(x)
+   last=x['side']
+ time.sleep(15)
