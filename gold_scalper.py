@@ -1,10 +1,10 @@
-import os,time,json,requests,uuid,re,xml.etree.ElementTree as ET
+import os,time,json,secrets,requests,uuid,re,xml.etree.ElementTree as ET
 from urllib.parse import quote_plus
 TOKEN=os.getenv('GOLD_TELEGRAM_BOT_TOKEN');CHAT=os.getenv('GOLD_TELEGRAM_CHAT_ID');KEY=os.getenv('ALLTICK_API_TOKEN');INVITE=os.getenv('GOLD_INVITE_CODE')
 URL='https://quote.alltick.co/quote-b-api/kline';REPORT=900;cache={};TTL={'5min':300,'15min':900,'1h':3600}
 KLINE_TYPE={'5min':2,'15min':3,'1h':5}
 MIN_API_GAP=11;last_api_request=0
-DATA_DIR='/data' if os.path.isdir('/data') and os.access('/data',os.W_OK) else '.';STATE_FILE=os.path.join(DATA_DIR,'gold_learning_state.json');SUB_FILE=os.path.join(DATA_DIR,'gold_subscribers.json')
+DATA_DIR='/data' if os.path.isdir('/data') and os.access('/data',os.W_OK) else '.';STATE_FILE=os.path.join(DATA_DIR,'gold_learning_state.json');SUB_FILE=os.path.join(DATA_DIR,'gold_subscribers.json');INVITE_FILE=os.path.join(DATA_DIR,'gold_invite.json')
 BASE={'trend5':14,'trend15':16,'trend1h':5,'structure5':14,'structure15':10,'liquidity':20,'equal_liq':4,'price_action':12,'breakout':18,'harmonic5':18,'harmonic15':12,'rsi':7}
 NEWS_REFRESH=60;NEWS_BLOCK_MINUTES=12;news_cache={'t':0,'v':{'bias':'NEUTRAL','score':0,'block':False,'headline':'لا خبر عاجل مؤكد','items':[]}};news_seen=set()
 ESCALATION={'attack','attacks','strike','strikes','bomb','missile','drone','retaliation','escalat','blockade','hormuz','killed','war expands','military action','threatens'}
@@ -15,7 +15,17 @@ def load_subscribers():
   with open(SUB_FILE) as f:s.update(str(x) for x in json.load(f))
  except:pass
  return s
-SUBSCRIBERS=load_subscribers();telegram_offset=0
+def load_invite():
+ try:
+  with open(INVITE_FILE) as f:return str(json.load(f).get('code') or '')
+ except:return str(INVITE or '')
+def save_invite():
+ try:
+  tmp=INVITE_FILE+'.tmp'
+  with open(tmp,'w') as f:json.dump({'code':INVITE_CODE},f)
+  os.replace(tmp,INVITE_FILE)
+ except Exception as e:print('Invite',e)
+SUBSCRIBERS=load_subscribers();INVITE_CODE=load_invite();telegram_offset=0
 def save_subscribers():
  try:
   tmp=SUB_FILE+'.tmp'
@@ -29,7 +39,7 @@ def tg_send(cid,m):
 def send(m):
  for cid in list(SUBSCRIBERS):tg_send(cid,m)
 def poll_commands():
- global telegram_offset
+ global telegram_offset,INVITE_CODE
  if not TOKEN:return
  try:
   r=requests.get(f'https://api.telegram.org/bot{TOKEN}/getUpdates',params={'offset':telegram_offset,'timeout':0,'allowed_updates':'["message"]'},timeout=12);r.raise_for_status()
@@ -39,9 +49,16 @@ def poll_commands():
    if txt.startswith('/start'):
     arg=txt.split(maxsplit=1)[1].strip() if len(txt.split(maxsplit=1))>1 else ''
     if cid in SUBSCRIBERS:tg_send(cid,'✅ أنت مشترك بالفعل في إشارات الذهب.')
-    elif INVITE and arg==INVITE:
+    elif INVITE_CODE and secrets.compare_digest(arg,INVITE_CODE):
      SUBSCRIBERS.add(cid);save_subscribers();tg_send(cid,'✅ تم الاشتراك في إشارات GOLD SCALPER PRO.\nلإيقافها أرسل /stop')
     else:tg_send(cid,'🔒 رابط الدعوة غير صالح.')
+   elif txt.startswith('/invite') and cid==str(CHAT):
+    INVITE_CODE=secrets.token_urlsafe(6);save_invite()
+    try:
+     me=requests.get(f'https://api.telegram.org/bot{TOKEN}/getMe',timeout=10).json().get('result',{});username=me.get('username','')
+     link=f'https://t.me/{username}?start={INVITE_CODE}' if username else f'رمز الدعوة: {INVITE_CODE}'
+     tg_send(cid,'🔐 رابط دعوة خاص جديد:\n'+link+'\n\nأي رابط قديم توقف.')
+    except Exception as e:tg_send(cid,f'🔐 رمز الدعوة الجديد: {INVITE_CODE}')
    elif txt.startswith('/stop'):
     if cid in SUBSCRIBERS and cid!=str(CHAT):
      SUBSCRIBERS.remove(cid);save_subscribers()
