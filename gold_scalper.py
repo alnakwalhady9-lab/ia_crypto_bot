@@ -1,6 +1,8 @@
 import os,time,json,secrets,requests,uuid,re,xml.etree.ElementTree as ET
 from urllib.parse import quote_plus
 TOKEN=os.getenv('GOLD_TELEGRAM_BOT_TOKEN');CHAT=os.getenv('GOLD_TELEGRAM_CHAT_ID');KEY=os.getenv('ALLTICK_API_TOKEN');INVITE=os.getenv('GOLD_INVITE_CODE')
+# Safety default: paper-test every signal and never broadcast entries until explicitly approved.
+PAPER_MODE=os.getenv('GOLD_PAPER_MODE','true').strip().lower() not in ('0','false','off','no')
 URL='https://quote.alltick.co/quote-b-api/kline';REPORT=900;cache={};TTL={'5min':300,'15min':900,'1h':3600}
 KLINE_TYPE={'5min':2,'15min':3,'1h':5}
 MIN_API_GAP=11;last_api_request=0
@@ -38,6 +40,11 @@ def tg_send(cid,m):
  except Exception as e:print('Telegram',cid,e)
 def send(m):
  for cid in list(SUBSCRIBERS):tg_send(cid,m)
+def trade_send(m):
+ # Paper results stay in Railway logs for auditing; subscribers receive no trade alerts.
+ clean=str(m).replace('\\n',' | ')
+ if PAPER_MODE:print('PAPER RESULT:',clean)
+ else:send(m)
 def poll_commands():
  global telegram_offset,INVITE_CODE
  if not TOKEN:return
@@ -296,7 +303,7 @@ def analyze():
  s5=snap(fetch('XAU/USD','5min'));s15=snap(fetch('XAU/USD','15min'));s1=snap(fetch('XAU/USD','1h'))
  if not all((s5,s15,s1)):return None
  if not (candle_is_fresh(s5,'5min') and candle_is_fresh(s15,'15min') and candle_is_fresh(s1,'1h')):
-  print('SIGNAL BLOCKED: stale AllTick candle data')
+  print('SIGNAL BLOCKED: stale AllTick candle data', 'ages=', {tf:round(time.time()-(float(ss['c'][-1]['t'])/(1000 if float(ss['c'][-1]['t'])>1e12 else 1))) for tf,ss in [('5m',s5),('15m',s15),('1h',s1)]})
   return None
  p=s5['p'];a=s5['a'];sup,res=levels(s5['c']);st5=structure(s5['c']);st15=structure(s15['c']);liq=liquidity(s5['c'],a);pa=price_action(s5['c']);br=breakout(s5['c'],sup,res,a);h5=harmonic(s5['c']);h15=harmonic(s15['c']);t5,t15,t1=trend(s5),trend(s15),trend(s1);buy=sell=0;why=[];fb=[];fs=[]
  def add(k,side,text=None):
@@ -387,7 +394,7 @@ def open_signal(x):
  if state['active']:
   print('SIGNAL BLOCKED: an earlier gold signal is still active')
   return False
- sig={'id':state['next_id'],'side':x['side'],'entry':x['p'],'sl':x['sl'],'tps':[x['tp1'],x['tp2'],x['tp3']],'hit':[False]*3,'max_tp':0,'features':x['features'],'buy_pct':x['bp'],'sell_pct':x['sp'],'opened_at':time.time()};state['next_id']+=1;state['active'].append(sig);save_state();return True
+ sig={'id':state['next_id'],'side':x['side'],'entry':x['p'],'sl':x['sl'],'tps':[x['tp1'],x['tp2'],x['tp3']],'hit':[False]*3,'max_tp':0,'features':x['features'],'buy_pct':x['bp'],'sell_pct':x['sp'],'opened_at':time.time()};state['next_id']+=1;state['active'].append(sig);save_state();print(f'PAPER OPEN #{sig["id"]} {sig["side"]} entry={sig["entry"]:.2f} sl={sig["sl"]:.2f} tp1={sig["tps"][0]:.2f} tp2={sig["tps"][1]:.2f} tp3={sig["tps"][2]:.2f}');return True
 def close_signal(sig,result,price):
  global last
  sig['result']=result;sig['exit_price']=price;sig['closed_at']=time.time();state['history'].append(sig.copy());state['history']=state['history'][-500:];state['active'].remove(sig);last=None;save_state();learn()
@@ -399,13 +406,13 @@ def track_live(c):
   tp3=hi>=sig['tps'][2] if sig['side']=='BUY' else lo<=sig['tps'][2]
   # If SL and TP3 are both inside the same 1m candle, ordering is unknown: record the conservative SL outcome.
   if stop and tp3:
-   close_signal(sig,'SL_AMBIGUOUS',sig['sl']);send(f'❌ GOLD SIGNAL #{sig["id"]} — SL HIT (نفس شمعة TP/SL)\n{stats_text()}');continue
+   close_signal(sig,'SL_AMBIGUOUS',sig['sl']);trade_send(f'❌ GOLD SIGNAL #{sig["id"]} — SL HIT (نفس شمعة TP/SL)\n{stats_text()}');continue
   touch=(lambda z:hi>=z) if sig['side']=='BUY' else (lambda z:lo<=z)
   for i,t in enumerate(sig['tps']):
    if not sig['hit'][i] and touch(t):
-    sig['hit'][i]=True;sig['max_tp']=max(sig['max_tp'],i+1);save_state();send(f'✅ GOLD SIGNAL #{sig["id"]} — TP{i+1} HIT\n🎯 الهدف: {t:.2f}\n📈 المحقق: +{gold_pips(sig["entry"],t)} pips')
-  if sig['hit'][2]:close_signal(sig,'TP3',sig['tps'][2]);send(f'🏁 GOLD SIGNAL #{sig["id"]} اكتملت — TP3\n{stats_text()}');continue
-  if stop:close_signal(sig,'SL_AFTER_TP'+str(sig['max_tp']) if sig['max_tp'] else 'SL',sig['sl']);send(f'❌ GOLD SIGNAL #{sig["id"]} — SL HIT\n🎯 أعلى هدف: TP{sig["max_tp"]}\n{stats_text()}')
+    sig['hit'][i]=True;sig['max_tp']=max(sig['max_tp'],i+1);save_state();trade_send(f'✅ GOLD SIGNAL #{sig["id"]} — TP{i+1} HIT\n🎯 الهدف: {t:.2f}\n📈 المحقق: +{gold_pips(sig["entry"],t)} pips')
+  if sig['hit'][2]:close_signal(sig,'TP3',sig['tps'][2]);trade_send(f'🏁 GOLD SIGNAL #{sig["id"]} اكتملت — TP3\n{stats_text()}');continue
+  if stop:close_signal(sig,'SL_AFTER_TP'+str(sig['max_tp']) if sig['max_tp'] else 'SL',sig['sl']);trade_send(f'❌ GOLD SIGNAL #{sig["id"]} — SL HIT\n🎯 أعلى هدف: TP{sig["max_tp"]}\n{stats_text()}')
 state=load_state();print('Gold learning state:',STATE_FILE,'history=',len(state['history']),'active=',len(state['active']),'weights=',state['weights'])
 last=None;last_report=0;last_analysis=0
 while True:
@@ -423,7 +430,11 @@ while True:
    periodic=last_report==0 or now-last_report>=REPORT
    immediate=(not has_active) and x['side'] in ('BUY','SELL') and x['side']!=last
    opened=open_signal(x) if immediate else False
-   if periodic or opened:
+   if PAPER_MODE:
+    if periodic:
+     send('🧪 GOLD BOT في وضع الاختبار الآمن.\\nتم إيقاف إشارات الدخول مؤقتًا لحين اكتمال اختبار الأداء.\\nلن تُرسل أي صفقة حقيقية الآن.')
+     last_report=now
+   elif periodic or opened:
     send(msg(x))
     if periodic:last_report=now
    if not state['active']:last=x['side']
