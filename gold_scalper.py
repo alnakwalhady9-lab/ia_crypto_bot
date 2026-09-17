@@ -1,12 +1,46 @@
 import os,time,json,requests
-TOKEN=os.getenv('GOLD_TELEGRAM_BOT_TOKEN');CHAT=os.getenv('GOLD_TELEGRAM_CHAT_ID');KEY=os.getenv('TWELVE_DATA_API_KEY')
+TOKEN=os.getenv('GOLD_TELEGRAM_BOT_TOKEN');CHAT=os.getenv('GOLD_TELEGRAM_CHAT_ID');KEY=os.getenv('TWELVE_DATA_API_KEY');INVITE=os.getenv('GOLD_INVITE_CODE')
 URL='https://api.twelvedata.com/time_series';REPORT=900;cache={};TTL={'5min':300,'15min':900,'1h':3600}
-DATA_DIR='/data' if os.path.isdir('/data') and os.access('/data',os.W_OK) else '.';STATE_FILE=os.path.join(DATA_DIR,'gold_learning_state.json')
+DATA_DIR='/data' if os.path.isdir('/data') and os.access('/data',os.W_OK) else '.';STATE_FILE=os.path.join(DATA_DIR,'gold_learning_state.json');SUB_FILE=os.path.join(DATA_DIR,'gold_subscribers.json')
 BASE={'trend5':14,'trend15':16,'trend1h':5,'structure5':14,'structure15':10,'liquidity':20,'equal_liq':4,'price_action':12,'breakout':18,'harmonic5':18,'harmonic15':12,'rsi':7}
+def load_subscribers():
+ s=set([str(CHAT)]) if CHAT else set()
+ try:
+  with open(SUB_FILE) as f:s.update(str(x) for x in json.load(f))
+ except:pass
+ return s
+SUBSCRIBERS=load_subscribers();telegram_offset=0
+def save_subscribers():
+ try:
+  tmp=SUB_FILE+'.tmp'
+  with open(tmp,'w') as f:json.dump(sorted(SUBSCRIBERS),f)
+  os.replace(tmp,SUB_FILE)
+ except Exception as e:print('Subscribers',e)
+def tg_send(cid,m):
+ if not TOKEN:return
+ try:requests.post(f'https://api.telegram.org/bot{TOKEN}/sendMessage',data={'chat_id':cid,'text':m},timeout=15).raise_for_status()
+ except Exception as e:print('Telegram',cid,e)
 def send(m):
- if not TOKEN or not CHAT:return
- try:requests.post(f'https://api.telegram.org/bot{TOKEN}/sendMessage',data={'chat_id':CHAT,'text':m},timeout=15).raise_for_status()
- except Exception as e:print('Telegram',e)
+ for cid in list(SUBSCRIBERS):tg_send(cid,m)
+def poll_commands():
+ global telegram_offset
+ if not TOKEN:return
+ try:
+  r=requests.get(f'https://api.telegram.org/bot{TOKEN}/getUpdates',params={'offset':telegram_offset,'timeout':0,'allowed_updates':'["message"]'},timeout=12);r.raise_for_status()
+  for u in r.json().get('result',[]):
+   telegram_offset=max(telegram_offset,int(u['update_id'])+1);q=u.get('message') or {};cid=str((q.get('chat') or {}).get('id',''));txt=(q.get('text') or '').strip()
+   if not cid or not txt:continue
+   if txt.startswith('/start'):
+    arg=txt.split(maxsplit=1)[1].strip() if len(txt.split(maxsplit=1))>1 else ''
+    if cid in SUBSCRIBERS:tg_send(cid,'✅ أنت مشترك بالفعل في إشارات الذهب.')
+    elif INVITE and arg==INVITE:
+     SUBSCRIBERS.add(cid);save_subscribers();tg_send(cid,'✅ تم الاشتراك في إشارات GOLD SCALPER PRO.\nلإيقافها أرسل /stop')
+    else:tg_send(cid,'🔒 رابط الدعوة غير صالح.')
+   elif txt.startswith('/stop'):
+    if cid in SUBSCRIBERS and cid!=str(CHAT):
+     SUBSCRIBERS.remove(cid);save_subscribers()
+    tg_send(cid,'⛔ تم إيقاف إشارات الذهب.')
+ except Exception as e:print('Telegram updates',e)
 def fetch(sym,tf,n=200):
  k=f'{sym}:{tf}:{n}';now=time.time()
  if k in cache and now-cache[k][0]<TTL.get(tf,120):return cache[k][1]
@@ -191,6 +225,7 @@ def track_live(c):
 state=load_state();print('Gold learning state:',STATE_FILE,'history=',len(state['history']),'active=',len(state['active']),'weights=',state['weights'])
 last=None;last_report=0;last_analysis=0
 while True:
+ poll_commands()
  live=fetch_live()
  if live:
   track_live(live);print(f'LIVE XAU {live["c"]:.2f} H={live["h"]:.2f} L={live["l"]:.2f} active={len(state["active"])}')
