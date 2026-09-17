@@ -273,12 +273,12 @@ def notify_breaking(news):
  mood='تصعيد — دعم محتمل للذهب' if news['bias']=='ESCALATION' else 'تهدئة — ضغط محتمل على الذهب' if news['bias']=='EASING' else 'متضارب'
  send(f'🚨 خبر عاجل مؤثر على الذهب\\n{title}\\n📰 التصنيف: {mood}\\n⚡ تم تفعيل NEWS SCALP: ننتظر تأكيد حركة السعر قبل الدخول؛ لا دخول عشوائي وقت السبريد العالي.')
 
-def default_state():return {'next_id':1,'active':[],'history':[],'weights':{k:1.0 for k in BASE},'last_learn_count':0}
+def default_state():return {'next_id':1,'active':[],'history':[],'weights':{k:1.0 for k in BASE},'last_learn_count':0,'last_open_bar':None,'last_closed_at':0}
 def load_state():
  try:
   with open(STATE_FILE) as f:s=json.load(f)
   for k in BASE:s.setdefault('weights',{}).setdefault(k,1.0)
-  s.setdefault('history',[]);s.setdefault('active',[]);s.setdefault('next_id',1);s.setdefault('last_learn_count',0);return s
+  s.setdefault('history',[]);s.setdefault('active',[]);s.setdefault('next_id',1);s.setdefault('last_learn_count',0);s.setdefault('last_open_bar',None);s.setdefault('last_closed_at',0);return s
  except:return default_state()
 def save_state():
  try:
@@ -396,7 +396,14 @@ def open_signal(x):
  if state['active']:
   print('SIGNAL BLOCKED: an earlier gold signal is still active')
   return False
- sig={'id':state['next_id'],'side':x['side'],'entry':x['p'],'sl':x['sl'],'tps':[x['tp1'],x['tp2'],x['tp3']],'hit':[False]*3,'max_tp':0,'features':x['features'],'buy_pct':x['bp'],'sell_pct':x['sp'],'opened_at':time.time()};state['next_id']+=1;state['active'].append(sig);save_state();print(f'PAPER OPEN #{sig["id"]} {sig["side"]} entry={sig["entry"]:.2f} sl={sig["sl"]:.2f} tp1={sig["tps"][0]:.2f} tp2={sig["tps"][1]:.2f} tp3={sig["tps"][2]:.2f}');return True
+ bar=str(x['s5']['c'][-1].get('t'))
+ if state.get('last_open_bar')==bar:
+  print('SIGNAL BLOCKED: duplicate entry on the same completed 5m candle')
+  return False
+ if time.time()-float(state.get('last_closed_at') or 0)<900:
+  print('SIGNAL BLOCKED: 15-minute cooldown after the last closed trade')
+  return False
+ sig={'id':state['next_id'],'side':x['side'],'entry':x['p'],'sl':x['sl'],'tps':[x['tp1'],x['tp2'],x['tp3']],'hit':[False]*3,'max_tp':0,'features':x['features'],'buy_pct':x['bp'],'sell_pct':x['sp'],'opened_at':time.time(),'opened_bar':bar};state['next_id']+=1;state['last_open_bar']=bar;state['active'].append(sig);save_state();print(f'PAPER OPEN #{sig["id"]} {sig["side"]} entry={sig["entry"]:.2f} sl={sig["sl"]:.2f} tp1={sig["tps"][0]:.2f} tp2={sig["tps"][1]:.2f} tp3={sig["tps"][2]:.2f}');return True
 def close_signal(sig,result,price):
  global last
  sig['result']=result;sig['exit_price']=price;sig['closed_at']=time.time();state['history'].append(sig.copy());state['history']=state['history'][-500:];state['active'].remove(sig);last=None;save_state();learn()
