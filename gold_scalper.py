@@ -1,6 +1,7 @@
-import os,time,json,requests
-TOKEN=os.getenv('GOLD_TELEGRAM_BOT_TOKEN');CHAT=os.getenv('GOLD_TELEGRAM_CHAT_ID');KEY=os.getenv('TWELVE_DATA_API_KEY');INVITE=os.getenv('GOLD_INVITE_CODE')
-URL='https://api.twelvedata.com/time_series';REPORT=900;cache={};TTL={'5min':300,'15min':900,'1h':3600}
+import os,time,json,requests,uuid
+TOKEN=os.getenv('GOLD_TELEGRAM_BOT_TOKEN');CHAT=os.getenv('GOLD_TELEGRAM_CHAT_ID');KEY=os.getenv('ALLTICK_API_TOKEN');INVITE=os.getenv('GOLD_INVITE_CODE')
+URL='https://quote.alltick.co/quote-b-api/kline';REPORT=900;cache={};TTL={'5min':300,'15min':900,'1h':3600}
+KLINE_TYPE={'5min':2,'15min':3,'1h':5}
 DATA_DIR='/data' if os.path.isdir('/data') and os.access('/data',os.W_OK) else '.';STATE_FILE=os.path.join(DATA_DIR,'gold_learning_state.json');SUB_FILE=os.path.join(DATA_DIR,'gold_subscribers.json')
 BASE={'trend5':14,'trend15':16,'trend1h':5,'structure5':14,'structure15':10,'liquidity':20,'equal_liq':4,'price_action':12,'breakout':18,'harmonic5':18,'harmonic15':12,'rsi':7}
 def load_subscribers():
@@ -42,23 +43,55 @@ def poll_commands():
     tg_send(cid,'⛔ تم إيقاف إشارات الذهب.')
  except Exception as e:print('Telegram updates',e)
 def fetch(sym,tf,n=200):
- k=f'{sym}:{tf}:{n}';now=time.time()
- if k in cache and now-cache[k][0]<TTL.get(tf,120):return cache[k][1]
- try:
-  r=requests.get(URL,params={'symbol':sym,'interval':tf,'outputsize':n,'apikey':KEY,'format':'JSON'},timeout=30);r.raise_for_status();d=r.json()
-  if d.get('status')=='error':print('TD',d.get('message'));return None
-  out=[]
-  for z in reversed(d.get('values',[])):
-   try:out.append({'t':z.get('datetime'),'o':float(z['open']),'h':float(z['high']),'l':float(z['low']),'c':float(z['close'])})
-   except:pass
-  if out:cache[k]=(now,out)
-  return out or None
- except Exception as e:
-  cache[k]=(now,None)  # Back off by the timeframe TTL after 429/network failures.
-  print('Data',e);return None
+    k=f'{sym}:{tf}';now=time.time()
+    if k in cache and now-cache[k][0]<TTL[tf]: return cache[k][1]
+    try:
+        if not KEY:
+            print('AllTick: ALLTICK_API_TOKEN is missing')
+            return None
+        query={
+            'trace':str(uuid.uuid4()),
+            'data':{
+                'code':'GOLD',
+                'kline_type':KLINE_TYPE[tf],
+                'kline_timestamp_end':0,
+                'query_kline_num':min(n,1000),
+                'adjust_type':0
+            }
+        }
+        r=requests.get(
+            URL,
+            params={'token':KEY,'query':json.dumps(query,separators=(',',':'))},
+            timeout=(5,20)
+        )
+        r.raise_for_status()
+        payload=r.json()
+        rows=(payload.get('data') or {}).get('kline_list') or []
+        out=[]
+        for z in rows:
+            try:
+                out.append({
+                    't':z.get('timestamp'),
+                    'o':float(z['open_price']),
+                    'h':float(z['high_price']),
+                    'l':float(z['low_price']),
+                    'c':float(z['close_price'])
+                })
+            except (KeyError,TypeError,ValueError):
+                continue
+        out.sort(key=lambda x:int(x['t'] or 0))
+        if not out:
+            print('AllTick:',payload.get('msg') or payload.get('message') or 'empty kline response')
+            return None
+        cache[k]=(now,out)
+        return out
+    except Exception as e:
+        print('AllTick error:',e)
+        return cache.get(k,(0,None))[1]
+
 def fetch_live():
  # Reuse the cached 5m feed instead of spending one API request every 15 seconds.
- # This keeps Twelve Data usage safely below the daily quota.
+ # This keeps AllTick usage safely below the daily quota.
  v=fetch('XAU/USD','5min',200)
  return v[-1] if v else None
 def ema(v,p):
