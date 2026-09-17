@@ -138,7 +138,16 @@ def atr(c,p=14):
  return sum(t[-p:])/p
 def snap(c):
  if not c or len(c)<65:return None
+ # AllTick includes the candle that is still forming.  Signals must only use
+ # completed candles; otherwise a temporary wick can flip the direction.
  c=c[:-1];v=[x['c'] for x in c];return {'p':v[-1],'e9':ema(v[-50:],9),'e20':ema(v[-60:],20),'e50':ema(v[-65:],50),'r':rsi(v),'a':atr(c),'c':c}
+def candle_is_fresh(s,tf):
+ try:
+  ts=float(s['c'][-1]['t'])
+  if ts>1e12:ts/=1000
+  # The newest completed candle may legitimately be almost two intervals old.
+  return 0<=time.time()-ts<=TTL[tf]*2.25
+ except:return False
 def trend(s):
  if s['p']>s['e9']>s['e20']>s['e50']:return 'UP'
  if s['p']<s['e9']<s['e20']<s['e50']:return 'DOWN'
@@ -226,6 +235,9 @@ def learn():
 def analyze():
  s5=snap(fetch('XAU/USD','5min'));s15=snap(fetch('XAU/USD','15min'));s1=snap(fetch('XAU/USD','1h'))
  if not all((s5,s15,s1)):return None
+ if not (candle_is_fresh(s5,'5min') and candle_is_fresh(s15,'15min') and candle_is_fresh(s1,'1h')):
+  print('SIGNAL BLOCKED: stale AllTick candle data')
+  return None
  p=s5['p'];a=s5['a'];sup,res=levels(s5['c']);st5=structure(s5['c']);st15=structure(s15['c']);liq=liquidity(s5['c'],a);pa=price_action(s5['c']);br=breakout(s5['c'],sup,res,a);h5=harmonic(s5['c']);h15=harmonic(s15['c']);t5,t15,t1=trend(s5),trend(s15),trend(s1);buy=sell=0;why=[];fb=[];fs=[]
  def add(k,side,text=None):
   nonlocal buy,sell
@@ -255,6 +267,13 @@ def analyze():
  if s5['r']<35:add('rsi','BUY')
  elif s5['r']>65:add('rsi','SELL')
  total=max(buy+sell,1);bp=round(100*buy/total);sp=100-bp;side='BUY' if bp>=65 and buy>=sell+W('price_action') else 'SELL' if sp>=65 and sell>=buy+W('price_action') else 'WAIT'
+ # 15m and 1h define the market direction.  The 5m chart is entry timing
+ # only: a counter-trend RSI, liquidity sweep or harmonic pattern can no
+ # longer overrule a falling higher timeframe.
+ if side=='BUY' and not (t15=='UP' and t1=='UP'):
+  side='WAIT';why.append('منع BUY: اتجاه 15m و1h غير صاعد معًا')
+ elif side=='SELL' and not (t15=='DOWN' and t1=='DOWN'):
+  side='WAIT';why.append('منع SELL: اتجاه 15m و1h غير هابط معًا')
  ranges=[x['h']-x['l'] for x in s5['c'][-15:-1]];spike=(s5['c'][-1]['h']-s5['c'][-1]['l'])>max(sum(ranges)/len(ranges)*2.5,a*2)
  if spike:side='WAIT';why.append('تقلب غير طبيعي — حماية الدخول')
  sl=p-1.15*a if side=='BUY' else p+1.15*a if side=='SELL' else None;tp1=p+1.1*a if side=='BUY' else p-1.1*a if side=='SELL' else None;tp2=p+1.7*a if side=='BUY' else p-1.7*a if side=='SELL' else None;tp3=p+2.4*a if side=='BUY' else p-2.4*a if side=='SELL' else None;features=fb if side=='BUY' else fs if side=='SELL' else []
