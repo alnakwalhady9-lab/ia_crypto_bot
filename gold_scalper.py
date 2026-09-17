@@ -1,4 +1,4 @@
-import os,time,requests
+import os,time,requests,json
 TOKEN=os.getenv("GOLD_TELEGRAM_BOT_TOKEN");CHAT=os.getenv("GOLD_TELEGRAM_CHAT_ID");KEY=os.getenv("TWELVE_DATA_API_KEY")
 URL="https://api.twelvedata.com/time_series";REPORT=900;cache={};TTL={"5min":60,"15min":180,"1h":600}
 def send(m):
@@ -13,7 +13,7 @@ def fetch(sym,tf,n=200):
         if d.get("status")=="error":print("TD",d.get("message"));return None
         x=[]
         for z in reversed(d.get("values",[])):
-            try:x.append({"o":float(z["open"]),"h":float(z["high"]),"l":float(z["low"]),"c":float(z["close"])})
+            try:x.append({"t":z.get("datetime"),"o":float(z["open"]),"h":float(z["high"]),"l":float(z["low"]),"c":float(z["close"])})
             except:pass
         if x:cache[k]=(now,x)
         return x or None
@@ -131,12 +131,64 @@ def msg(x):
     risk="لا دخول مؤكد حاليًا" if x["side"]=="WAIT" else f'📍 Entry: {x["p"]:.2f}\n🛑 SL: {x["sl"]:.2f}\n🎯 TP1: {x["tp1"]:.2f}\n🎯 TP2: {x["tp2"]:.2f}\n🎯 TP3: {x["tp3"]:.2f}'
     h5=x["h5"]["name"]+" "+ar(x["h5"]["side"]) if x["h5"] else "لا يوجد";h15=x["h15"]["name"]+" "+ar(x["h15"]["side"]) if x["h15"] else "لا يوجد"
     return f'🥇 GOLD SCALPER PRO\n\n🎯 القرار: {ar(x["side"])}\n💰 XAU/USD: {x["p"]:.2f}\n🟢 ميل الشراء: {x["bp"]}% | 🔴 ميل البيع: {x["sp"]}%\n\n📐 كلاسيكي 5m: {ar(x["st5"])} | 15m: {ar(x["st15"])}\n📊 EMA 5m/15m/1h: {ar(x["t5"])} / {ar(x["t15"])} / {ar(x["t1"])}\n🕯 Price Action: {ar(x["pa"])}\n💧 Liquidity: {"Sweep BUY" if x["liq"]["buy"] else "Sweep SELL" if x["liq"]["sell"] else "لا Sweep مؤكد"}\n🟢 دعم: {x["sup"]:.2f} | 🔴 مقاومة: {x["res"]:.2f}\n🧬 Harmonic 5m: {h5}\n🧬 Harmonic 15m: {h15}\n📈 RSI: {x["s5"]["r"]:.1f} | ATR: {x["a"]:.2f}\n\n{risk}\n🧠 التوافق: {"؛ ".join(x["why"][:7]) if x["why"] else "توافق ضعيف"}\n\n⚠️ تحليل احتمالي فقط — لا توجد صفقة منفذة.'
+STATE_FILE=os.getenv("GOLD_STATE_FILE","gold_signal_state.json")
+def load_state():
+    try:
+        with open(STATE_FILE,"r",encoding="utf-8") as f:
+            d=json.load(f)
+            return d if isinstance(d,dict) else {"active":[],"history":[],"next_id":1}
+    except Exception:
+        return {"active":[],"history":[],"next_id":1}
+def save_state():
+    try:
+        tmp=STATE_FILE+".tmp"
+        with open(tmp,"w",encoding="utf-8") as f:json.dump(state,f,ensure_ascii=False)
+        os.replace(tmp,STATE_FILE)
+    except Exception as e:print("State",e)
+def stats_text():
+    h=state["history"];closed=len(h)
+    if not closed:return "📊 لا توجد نتائج مغلقة بعد"
+    wins=sum(1 for z in h if z.get("max_tp",0)>=1);tp3=sum(1 for z in h if z.get("max_tp",0)>=3)
+    return f"📊 النتائج: {closed} | نجاح TP1: {wins} ({wins/closed*100:.1f}%) | TP3: {tp3}"
+def open_signal(x):
+    sig={"id":state["next_id"],"side":x["side"],"entry":x["p"],"sl":x["sl"],"tps":[x["tp1"],x["tp2"],x["tp3"]],"hit":[False,False,False],"max_tp":0,"opened_candle":x["s5"]["c"][-1].get("t"),"opened_at":time.time()}
+    state["next_id"]+=1;state["active"].append(sig);save_state()
+    print(f'Signal #{sig["id"]} opened {sig["side"]} @ {sig["entry"]:.2f}')
+def close_signal(sig,result,price):
+    sig["result"]=result;sig["closed_at"]=time.time();sig["exit_price"]=price
+    state["history"].append(sig.copy());state["history"]=state["history"][-500:]
+    if sig in state["active"]:state["active"].remove(sig)
+    save_state()
+def track_signals(x):
+    if not state["active"]:return
+    candle=x["s5"]["c"][-1];hi,lo=candle["h"],candle["l"];changed=False
+    for sig in list(state["active"]):
+        if candle.get("t")==sig.get("opened_candle"):continue
+        side=sig["side"];target_touch=(lambda level: hi>=level) if side=="BUY" else (lambda level: lo<=level)
+        for i,target in enumerate(sig["tps"]):
+            if not sig["hit"][i] and target_touch(target):
+                sig["hit"][i]=True;sig["max_tp"]=max(sig["max_tp"],i+1);changed=True
+                icon="🏆" if i==2 else "✅"
+                send(f'{icon} GOLD SIGNAL #{sig["id"]} — TP{i+1} HIT\n🎯 الهدف: {target:.2f}\n📈 أعلى الشمعة: {hi:.2f} | 📉 أدناها: {lo:.2f}')
+        if sig["hit"][2]:
+            close_signal(sig,"TP3",sig["tps"][2])
+            send(f'🏁 GOLD SIGNAL #{sig["id"]} اكتملت بنجاح — TP3\n{stats_text()}');continue
+        stop_hit=lo<=sig["sl"] if side=="BUY" else hi>=sig["sl"]
+        if stop_hit:
+            result="SL_AFTER_TP"+str(sig["max_tp"]) if sig["max_tp"] else "SL"
+            close_signal(sig,result,sig["sl"])
+            send(f'❌ GOLD SIGNAL #{sig["id"]} — SL HIT\n🛑 الوقف: {sig["sl"]:.2f}\n🎯 أعلى هدف تحقق: TP{sig["max_tp"] if sig["max_tp"] else 0}\n{stats_text()}');continue
+    if changed:save_state()
+state=load_state()
 last=None;last_report=0
 while True:
     x=analyze()
     if x:
         now=time.time();print(f'XAU {x["p"]:.2f} {x["side"]} BUY={x["bp"]}% SELL={x["sp"]}%')
         periodic=last_report==0 or now-last_report>=REPORT;immediate=x["side"] in ("BUY","SELL") and x["side"]!=last
-        if periodic or immediate:send(msg(x));last_report=now if periodic else last_report
+        track_signals(x)
+        if periodic or immediate:
+            send(msg(x));last_report=now if periodic else last_report
+            if immediate:open_signal(x)
         last=x["side"]
     time.sleep(30)
