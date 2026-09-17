@@ -1,5 +1,14 @@
 import os,time,re,xml.etree.ElementTree as ET,requests
+from requests.adapters import HTTPAdapter
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 TOKEN=os.getenv("TELEGRAM_BOT_TOKEN");CHAT=os.getenv("TELEGRAM_CHAT_ID");REPORT=900
+SESSION=requests.Session();_adapter=HTTPAdapter(pool_connections=10,pool_maxsize=10);SESSION.mount("https://",_adapter);SESSION.mount("http://",_adapter)
+EXECUTOR=ThreadPoolExecutor(max_workers=3)
+def run_with_timeout(fn,timeout,name):
+    try:
+        fut=EXECUTOR.submit(fn);return fut.result(timeout=timeout)
+    except FutureTimeoutError:print(f"{name} TIMEOUT after {timeout}s");return None
+    except Exception as e:print(f"{name} ERROR",e);return None
 NEWS=["https://www.coindesk.com/arc/outboundfeeds/rss/","https://cointelegraph.com/rss/"];REDDIT=["https://www.reddit.com/r/Bitcoin/new/.rss","https://www.reddit.com/r/CryptoCurrency/new/.rss"]
 POS={"approval","approved","adoption","bullish","surge","rally","record","inflows","buying","growth","breakout","easing","recovery","rebound"};NEG={"hack","exploit","ban","lawsuit","crackdown","bearish","plunge","selloff","outflows","liquidation","fraud","dump","crash","fear"};rc={"t":0,"v":"UNAVAILABLE"}
 def send(m):
@@ -8,16 +17,16 @@ def send(m):
         except Exception as e:print("Telegram",e)
 def candles(g,n):
     try:
-        r=requests.get("https://api.exchange.coinbase.com/products/BTC-USD/candles",params={"granularity":g},timeout=15,headers={"User-Agent":"ia-crypto-bot/2.0"});r.raise_for_status();x=r.json();x.sort(key=lambda z:z[0]);return x[-n:]
+        r=SESSION.get("https://api.exchange.coinbase.com/products/BTC-USD/candles",params={"granularity":g},timeout=(5,10),headers={"User-Agent":"ia-crypto-bot/2.0"});r.raise_for_status();x=r.json();x.sort(key=lambda z:z[0]);return x[-n:]
     except Exception as e:print("Coinbase",e);return None
 def hype_candles(interval="5m",limit=120):
     try:
-        r=requests.get("https://api.binance.com/api/v3/klines",params={"symbol":"HYPEUSDT","interval":interval,"limit":limit},timeout=15,headers={"User-Agent":"ia-crypto-bot/2.2"});r.raise_for_status()
+        r=SESSION.get("https://api.binance.com/api/v3/klines",params={"symbol":"HYPEUSDT","interval":interval,"limit":limit},timeout=(5,10),headers={"User-Agent":"ia-crypto-bot/2.2"});r.raise_for_status()
         return [[int(z[0]/1000),float(z[3]),float(z[2]),float(z[1]),float(z[4]),float(z[5])] for z in r.json()]
     except Exception as e:print("Binance HYPE",e);return None
 def eur_candles(interval="5m",limit=120):
     try:
-        r=requests.get("https://query1.finance.yahoo.com/v8/finance/chart/EURUSD=X",params={"range":"5d","interval":interval,"includePrePost":"false"},timeout=15,headers={"User-Agent":"Mozilla/5.0 ia-crypto-bot/2.3"});r.raise_for_status();j=r.json()["chart"]["result"][0];ts=j.get("timestamp",[]);q=j["indicators"]["quote"][0];out=[]
+        r=SESSION.get("https://query1.finance.yahoo.com/v8/finance/chart/EURUSD=X",params={"range":"5d","interval":interval,"includePrePost":"false"},timeout=(5,15),headers={"User-Agent":"Mozilla/5.0 ia-crypto-bot/2.3"});r.raise_for_status();j=r.json()["chart"]["result"][0];ts=j.get("timestamp",[]);q=j["indicators"]["quote"][0];out=[]
         for i,t in enumerate(ts):
             o=q["open"][i];h=q["high"][i];l=q["low"][i];c=q["close"][i]
             if None not in (o,h,l,c):out.append([int(t),float(l),float(h),float(o),float(c),0.0])
@@ -143,7 +152,12 @@ def scalp_msg(x,name,price_digits=3):
     return f'{name}\n\n🎯 القرار: {ar(x["side"])}\n💰 السعر: {f(x["p"])}\n🟢 ميل الشراء: {x["bp"]}% | 🔴 ميل البيع: {x["sp"]}%\n⏱ 5m/15m: {ar(x["t5"])} / {ar(x["t15"])}\n📐 الهيكل 5m: {ar(x["st"])}\n💧 Liquidity: {"Sweep BUY" if x["lb"] else "Sweep SELL" if x["ls"] else "لا Sweep مؤكد"}\n📈 RSI 5m: {x["r"]:.1f} | ATR: {f(x["a"])}\n🟢 دعم: {f(x["sup"])} | 🔴 مقاومة: {f(x["res"])}\n{risk}\n🧠 {"؛ ".join(x["why"][:5]) if x["why"] else "توافق محدود"}\n\n⚠️ إشارة تحليلية فقط وليست ضمان ربح.'
 last=None;last_hype=None;last_eur=None;last_report=0;last_hype_report=0;last_eur_report=0
 while True:
-    now=time.time();x=analyze();h=analyze_hype();e=analyze_eur()
+    print("LOOP START")
+    now=time.time()
+    x=run_with_timeout(analyze,20,"BTC analyze")
+    h=run_with_timeout(analyze_hype,20,"HYPE analyze")
+    e=run_with_timeout(analyze_eur,25,"EURUSD analyze")
+    print("HEARTBEAT")
     if x:
         print(f'BTC {x["p"]:.2f} {x["side"]} BUY={x["bp"]}% SELL={x["sp"]}%');periodic=last_report==0 or now-last_report>=REPORT;immediate=x["side"] in ("LONG","SHORT") and x["side"]!=last
         if periodic or immediate:send(msg(x));last_report=now if periodic else last_report
