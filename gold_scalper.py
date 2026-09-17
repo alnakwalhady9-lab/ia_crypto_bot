@@ -240,8 +240,9 @@ def analyze():
  sl=p-1.15*a if side=='BUY' else p+1.15*a if side=='SELL' else None;tp1=p+1.1*a if side=='BUY' else p-1.1*a if side=='SELL' else None;tp2=p+1.7*a if side=='BUY' else p-1.7*a if side=='SELL' else None;tp3=p+2.4*a if side=='BUY' else p-2.4*a if side=='SELL' else None;features=fb if side=='BUY' else fs if side=='SELL' else []
  return locals()
 def ar(x):return {'BUY':'🟢 شراء','SELL':'🔴 بيع','WAIT':'🟡 انتظار','UP':'صاعد','DOWN':'هابط','MIXED':'مختلط','BULLISH':'صاعد','BEARISH':'هابط','RANGE':'عرضي','NEUTRAL':'محايد'}.get(x,x)
+def gold_pips(entry,target):return int(round(abs(target-entry)*100))
 def msg(x):
- risk='لا دخول مؤكد حاليًا' if x['side']=='WAIT' else f'📍 Entry: {x["p"]:.2f}\n🛑 SL: {x["sl"]:.2f}\n🎯 TP1: {x["tp1"]:.2f}\n🎯 TP2: {x["tp2"]:.2f}\n🎯 TP3: {x["tp3"]:.2f}'
+ risk='لا دخول مؤكد حاليًا' if x['side']=='WAIT' else f'📍 Entry: {x["p"]:.2f}\n🛑 SL: {x["sl"]:.2f}\n🎯 TP1: {x["tp1"]:.2f} (+{gold_pips(x["p"],x["tp1"])} pips)\n🎯 TP2: {x["tp2"]:.2f} (+{gold_pips(x["p"],x["tp2"])} pips)\n🎯 TP3: {x["tp3"]:.2f} (+{gold_pips(x["p"],x["tp3"])} pips)'
  h5=x['h5']['name']+' '+ar(x['h5']['side']) if x['h5'] else 'لا يوجد';h15=x['h15']['name']+' '+ar(x['h15']['side']) if x['h15'] else 'لا يوجد'
  return f'🥇 GOLD SCALPER PRO\n\n🎯 القرار: {ar(x["side"])}\n💰 XAU/USD: {x["p"]:.2f}\n🟢 ميل الشراء: {x["bp"]}% | 🔴 ميل البيع: {x["sp"]}%\n📐 كلاسيكي 5m: {ar(x["st5"])} | 15m: {ar(x["st15"])}\n📊 EMA 5m/15m/1h: {ar(x["t5"])} / {ar(x["t15"])} / {ar(x["t1"])}\n🕯 Price Action: {ar(x["pa"])}\n💧 Liquidity: {"Sweep BUY" if x["liq"]["buy"] else "Sweep SELL" if x["liq"]["sell"] else "لا Sweep مؤكد"}\n🟢 دعم: {x["sup"]:.2f} | 🔴 مقاومة: {x["res"]:.2f}\n🧬 Harmonic 5m: {h5}\n🧬 Harmonic 15m: {h15}\n📈 RSI: {x["s5"]["r"]:.1f} | ATR: {x["a"]:.2f}\n\n{risk}\n🧠 التوافق: {"؛ ".join(x["why"][:7]) if x["why"] else "توافق ضعيف"}\n🧠 Adaptive learning: ON\n⚠️ تحليل احتمالي فقط — لا توجد صفقة منفذة.'
 def stats_text():
@@ -263,7 +264,7 @@ def track_live(c):
   touch=(lambda z:hi>=z) if sig['side']=='BUY' else (lambda z:lo<=z)
   for i,t in enumerate(sig['tps']):
    if not sig['hit'][i] and touch(t):
-    sig['hit'][i]=True;sig['max_tp']=max(sig['max_tp'],i+1);save_state();send(f'✅ GOLD SIGNAL #{sig["id"]} — TP{i+1} HIT\n🎯 الهدف: {t:.2f}')
+    sig['hit'][i]=True;sig['max_tp']=max(sig['max_tp'],i+1);save_state();send(f'✅ GOLD SIGNAL #{sig["id"]} — TP{i+1} HIT\n🎯 الهدف: {t:.2f}\n📈 المحقق: +{gold_pips(sig["entry"],t)} pips')
   if sig['hit'][2]:close_signal(sig,'TP3',sig['tps'][2]);send(f'🏁 GOLD SIGNAL #{sig["id"]} اكتملت — TP3\n{stats_text()}');continue
   if stop:close_signal(sig,'SL_AFTER_TP'+str(sig['max_tp']) if sig['max_tp'] else 'SL',sig['sl']);send(f'❌ GOLD SIGNAL #{sig["id"]} — SL HIT\n🎯 أعلى هدف: TP{sig["max_tp"]}\n{stats_text()}')
 state=load_state();print('Gold learning state:',STATE_FILE,'history=',len(state['history']),'active=',len(state['active']),'weights=',state['weights'])
