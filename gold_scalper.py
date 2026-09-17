@@ -100,11 +100,31 @@ def fetch(sym,tf,n=200):
         print('AllTick error:',type(e).__name__)
         return cache.get(k,(0,None))[1]
 
+live_cache=[0,None]
 def fetch_live():
- # Reuse the cached 5m feed instead of spending one API request every 15 seconds.
- # This keeps AllTick usage safely below the daily quota.
- v=fetch('XAU/USD','5min',200)
- return v[-1] if v else None
+ # Refresh the live candle every 30 seconds so TP/SL alerts are timely,
+ # while keeping API usage controlled.
+ global last_api_request
+ now=time.time()
+ if live_cache[1] is not None and now-live_cache[0]<30:
+  return live_cache[1]
+ try:
+  if not KEY:return live_cache[1]
+  query={'trace':str(uuid.uuid4()),'data':{'code':'GOLD','kline_type':KLINE_TYPE['5min'],'kline_timestamp_end':0,'query_kline_num':2,'adjust_type':0}}
+  wait_for=MIN_API_GAP-(time.time()-last_api_request)
+  if wait_for>0:time.sleep(wait_for)
+  last_api_request=time.time()
+  r=requests.get(URL,params={'token':KEY,'query':json.dumps(query,separators=(',',':'))},timeout=(5,20))
+  if not r.ok:return live_cache[1]
+  rows=(r.json().get('data') or {}).get('kline_list') or []
+  if not rows:return live_cache[1]
+  z=max(rows,key=lambda q:int(q.get('timestamp') or 0))
+  candle={'t':z.get('timestamp'),'o':float(z['open_price']),'h':float(z['high_price']),'l':float(z['low_price']),'c':float(z['close_price'])}
+  live_cache[:]=[now,candle]
+  return candle
+ except Exception as e:
+  print('AllTick live error:',type(e).__name__)
+  return live_cache[1]
 def ema(v,p):
  k=2/(p+1);x=v[0]
  for z in v[1:]:x=z*k+x*(1-k)
@@ -242,9 +262,15 @@ def analyze():
 def ar(x):return {'BUY':'🟢 شراء','SELL':'🔴 بيع','WAIT':'🟡 انتظار','UP':'صاعد','DOWN':'هابط','MIXED':'مختلط','BULLISH':'صاعد','BEARISH':'هابط','RANGE':'عرضي','NEUTRAL':'محايد'}.get(x,x)
 def gold_pips(entry,target):return int(round(abs(target-entry)*100))
 def msg(x):
- risk='لا دخول مؤكد حاليًا' if x['side']=='WAIT' else f'📍 Entry: {x["p"]:.2f}\n🛑 SL: {x["sl"]:.2f}\n🎯 TP1: {x["tp1"]:.2f} (+{gold_pips(x["p"],x["tp1"])} pips)\n🎯 TP2: {x["tp2"]:.2f} (+{gold_pips(x["p"],x["tp2"])} pips)\n🎯 TP3: {x["tp3"]:.2f} (+{gold_pips(x["p"],x["tp3"])} pips)'
+ if state['active']:
+  sig=state['active'][0];e=sig['entry'];t=sig['tps']
+  risk=f'📌 صفقة #{sig["id"]} مفتوحة: {ar(sig["side"])}\n📍 Entry: {e:.2f}\n🛑 SL: {sig["sl"]:.2f}\n🎯 TP1: {t[0]:.2f} (+{gold_pips(e,t[0])} pips)\n🎯 TP2: {t[1]:.2f} (+{gold_pips(e,t[1])} pips)\n🎯 TP3: {t[2]:.2f} (+{gold_pips(e,t[2])} pips)'
+  status='✅ الصفقة مسجلة وتحت المتابعة — لن تُفتح إشارة أخرى قبل TP3 أو SL.'
+ else:
+  risk='لا دخول مؤكد حاليًا' if x['side']=='WAIT' else f'📍 Entry محتمل: {x["p"]:.2f}\n🛑 SL: {x["sl"]:.2f}\n🎯 TP1: {x["tp1"]:.2f} (+{gold_pips(x["p"],x["tp1"])} pips)\n🎯 TP2: {x["tp2"]:.2f} (+{gold_pips(x["p"],x["tp2"])} pips)\n🎯 TP3: {x["tp3"]:.2f} (+{gold_pips(x["p"],x["tp3"])} pips)'
+  status='⚠️ تحليل احتمالي فقط — لا توجد صفقة مفتوحة.'
  h5=x['h5']['name']+' '+ar(x['h5']['side']) if x['h5'] else 'لا يوجد';h15=x['h15']['name']+' '+ar(x['h15']['side']) if x['h15'] else 'لا يوجد'
- return f'🥇 GOLD SCALPER PRO\n\n🎯 القرار: {ar(x["side"])}\n💰 XAU/USD: {x["p"]:.2f}\n🟢 ميل الشراء: {x["bp"]}% | 🔴 ميل البيع: {x["sp"]}%\n📐 كلاسيكي 5m: {ar(x["st5"])} | 15m: {ar(x["st15"])}\n📊 EMA 5m/15m/1h: {ar(x["t5"])} / {ar(x["t15"])} / {ar(x["t1"])}\n🕯 Price Action: {ar(x["pa"])}\n💧 Liquidity: {"Sweep BUY" if x["liq"]["buy"] else "Sweep SELL" if x["liq"]["sell"] else "لا Sweep مؤكد"}\n🟢 دعم: {x["sup"]:.2f} | 🔴 مقاومة: {x["res"]:.2f}\n🧬 Harmonic 5m: {h5}\n🧬 Harmonic 15m: {h15}\n📈 RSI: {x["s5"]["r"]:.1f} | ATR: {x["a"]:.2f}\n\n{risk}\n🧠 التوافق: {"؛ ".join(x["why"][:7]) if x["why"] else "توافق ضعيف"}\n🧠 Adaptive learning: ON\n⚠️ تحليل احتمالي فقط — لا توجد صفقة منفذة.'
+ return f'🥇 GOLD SCALPER PRO\n\n🎯 القرار: {ar(x["side"])}\n💰 XAU/USD: {x["p"]:.2f}\n🟢 ميل الشراء: {x["bp"]}% | 🔴 ميل البيع: {x["sp"]}%\n📐 كلاسيكي 5m: {ar(x["st5"])} | 15m: {ar(x["st15"])}\n📊 EMA 5m/15m/1h: {ar(x["t5"])} / {ar(x["t15"])} / {ar(x["t1"])}\n🕯 Price Action: {ar(x["pa"])}\n💧 Liquidity: {"Sweep BUY" if x["liq"]["buy"] else "Sweep SELL" if x["liq"]["sell"] else "لا Sweep مؤكد"}\n🟢 دعم: {x["sup"]:.2f} | 🔴 مقاومة: {x["res"]:.2f}\n🧬 Harmonic 5m: {h5}\n🧬 Harmonic 15m: {h15}\n📈 RSI: {x["s5"]["r"]:.1f} | ATR: {x["a"]:.2f}\n\n{risk}\n🧠 التوافق: {"؛ ".join(x["why"][:7]) if x["why"] else "توافق ضعيف"}\n🧠 Adaptive learning: ON\n{status}'
 def stats_text():
  h=state['history'];n=len(h);w=sum(x.get('max_tp',0)>=1 for x in h);t3=sum(x.get('max_tp',0)>=3 for x in h)
  return f'📊 سجل التعلم: {n} مغلقة | TP1+ {w} ({w/n*100:.1f}%) | TP3 {t3}' if n else '📊 سجل التعلم: لا توجد نتائج مغلقة بعد'
@@ -273,9 +299,6 @@ def track_live(c):
   if stop:close_signal(sig,'SL_AFTER_TP'+str(sig['max_tp']) if sig['max_tp'] else 'SL',sig['sl']);send(f'❌ GOLD SIGNAL #{sig["id"]} — SL HIT\n🎯 أعلى هدف: TP{sig["max_tp"]}\n{stats_text()}')
 state=load_state();print('Gold learning state:',STATE_FILE,'history=',len(state['history']),'active=',len(state['active']),'weights=',state['weights'])
 last=None;last_report=time.time();last_analysis=0
-# A deployment replaces Railway's temporary filesystem. This guard prevents a duplicate signal
-# while the pre-deployment Telegram signal may still be open. Persistent volume support can remove it.
-startup_signal_lock_until=time.time()+21600 if not state['active'] and not state['history'] else 0
 while True:
  poll_commands()
  live=fetch_live()
@@ -287,11 +310,11 @@ while True:
   if x:
    print(f'XAU {x["p"]:.2f} {x["side"]} BUY={x["bp"]}% SELL={x["sp"]}%')
    has_active=bool(state['active'])
-   periodic=(not has_active) and now-last_report>=REPORT
-   immediate=(not has_active) and now>=startup_signal_lock_until and x['side'] in ('BUY','SELL') and x['side']!=last
-   if periodic or immediate:
-    send(msg(x));last_report=now if periodic else last_report
-   if immediate:
-    open_signal(x)
-   if not has_active:last=x['side']
+   periodic=now-last_report>=REPORT
+   immediate=(not has_active) and x['side'] in ('BUY','SELL') and x['side']!=last
+   opened=open_signal(x) if immediate else False
+   if periodic or opened:
+    send(msg(x))
+    if periodic:last_report=now
+   if not state['active']:last=x['side']
  time.sleep(15)
