@@ -1,6 +1,6 @@
 import os,time,json,requests
 TOKEN=os.getenv('GOLD_TELEGRAM_BOT_TOKEN');CHAT=os.getenv('GOLD_TELEGRAM_CHAT_ID');KEY=os.getenv('TWELVE_DATA_API_KEY')
-URL='https://api.twelvedata.com/time_series';REPORT=900;cache={};TTL={'5min':60,'15min':180,'1h':600}
+URL='https://api.twelvedata.com/time_series';REPORT=900;cache={};TTL={'5min':300,'15min':900,'1h':3600}
 DATA_DIR='/data' if os.path.isdir('/data') and os.access('/data',os.W_OK) else '.';STATE_FILE=os.path.join(DATA_DIR,'gold_learning_state.json')
 BASE={'trend5':14,'trend15':16,'trend1h':5,'structure5':14,'structure15':10,'liquidity':20,'equal_liq':4,'price_action':12,'breakout':18,'harmonic5':18,'harmonic15':12,'rsi':7}
 def send(m):
@@ -21,14 +21,10 @@ def fetch(sym,tf,n=200):
   return out or None
  except Exception as e:print('Data',e);return None
 def fetch_live():
- try:
-  r=requests.get(URL,params={'symbol':'XAU/USD','interval':'1min','outputsize':2,'apikey':KEY,'format':'JSON'},timeout=15);r.raise_for_status();d=r.json()
-  if d.get('status')=='error':print('TD LIVE',d.get('message'));return None
-  v=d.get('values',[])
-  if not v:return None
-  z=v[0]
-  return {'t':z.get('datetime'),'o':float(z['open']),'h':float(z['high']),'l':float(z['low']),'c':float(z['close'])}
- except Exception as e:print('LiveData',e);return None
+ # Reuse the cached 5m feed instead of spending one API request every 15 seconds.
+ # This keeps Twelve Data usage safely below the daily quota.
+ v=fetch('XAU/USD','5min',200)
+ return v[-1] if v else None
 def ema(v,p):
  k=2/(p+1);x=v[0]
  for z in v[1:]:x=z*k+x*(1-k)
