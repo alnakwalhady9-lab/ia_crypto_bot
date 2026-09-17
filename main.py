@@ -17,7 +17,7 @@ def hype_candles(interval="5m",limit=120):
     except Exception as e:print("Binance HYPE",e);return None
 def eur_candles(interval="5m",limit=120):
     try:
-        r=requests.get("https://query1.finance.yahoo.com/v8/finance/chart/EURUSD=X",params={"range":"5d","interval":interval,"includePrePost":"false"},timeout=15,headers={"User-Agent":"Mozilla/5.0 ia-crypto-bot/2.2"});r.raise_for_status();j=r.json()["chart"]["result"][0];ts=j.get("timestamp",[]);q=j["indicators"]["quote"][0];out=[]
+        r=requests.get("https://query1.finance.yahoo.com/v8/finance/chart/EURUSD=X",params={"range":"5d","interval":interval,"includePrePost":"false"},timeout=15,headers={"User-Agent":"Mozilla/5.0 ia-crypto-bot/2.3"});r.raise_for_status();j=r.json()["chart"]["result"][0];ts=j.get("timestamp",[]);q=j["indicators"]["quote"][0];out=[]
         for i,t in enumerate(ts):
             o=q["open"][i];h=q["high"][i];l=q["low"][i];c=q["close"][i]
             if None not in (o,h,l,c):out.append([int(t),float(l),float(h),float(o),float(c),0.0])
@@ -65,7 +65,7 @@ def sentiment(urls):
     texts=[]
     for u in urls:
         try:
-            r=requests.get(u,timeout=8,headers={"User-Agent":"Mozilla/5.0 ia-bot"});
+            r=requests.get(u,timeout=8,headers={"User-Agent":"Mozilla/5.0 ia-bot"})
             if r.status_code!=200:continue
             root=ET.fromstring(r.content)
             for e in root.iter():
@@ -106,18 +106,26 @@ def analyze():
 def scalp_analysis(c5,c15,forex=False):
     s5=snap(c5);s15=snap(c15)
     if not all((s5,s15)):return None
-    c=s5["c"];p=s5["p"];a=atr(c);r=s5["r"];t5,t15=trend(s5),trend(s15);st=structure(c);lb,ls=liquidity(c);recent=c[-30:];sup=min(float(x[1]) for x in recent);res=max(float(x[2]) for x in recent);buy=sell=0;why=[]
-    if t5=="UP":buy+=30
-    elif t5=="DOWN":sell+=30
-    if t15=="UP":buy+=30
-    elif t15=="DOWN":sell+=30
-    if st=="UP":buy+=15;why.append("هيكل 5m صاعد")
-    elif st=="DOWN":sell+=15;why.append("هيكل 5m هابط")
-    if lb:buy+=15;why.append("Liquidity sweep BUY")
-    if ls:sell+=15;why.append("Liquidity sweep SELL")
-    if r>=55:buy+=10
-    elif r<=45:sell+=10
-    total=max(buy+sell,1);bp=round(100*buy/total);sp=100-bp;side="LONG" if bp>=68 and buy>=sell+18 else "SHORT" if sp>=68 and sell>=buy+18 else "WAIT"
+    c=s5["c"];p=s5["p"];a=atr(c);r=s5["r"];t5,t15=trend(s5),trend(s15);st=structure(c);lb,ls=liquidity(c);recent=c[-30:];sup=min(float(x[1]) for x in recent);res=max(float(x[2]) for x in recent);buy=sell=0;why=[];buy_conf=sell_conf=0
+    if t5=="UP":buy+=30;buy_conf+=1
+    elif t5=="DOWN":sell+=30;sell_conf+=1
+    if t15=="UP":buy+=30;buy_conf+=1
+    elif t15=="DOWN":sell+=30;sell_conf+=1
+    if st=="UP":buy+=15;buy_conf+=1;why.append("هيكل 5m صاعد")
+    elif st=="DOWN":sell+=15;sell_conf+=1;why.append("هيكل 5m هابط")
+    if lb:buy+=15;buy_conf+=1;why.append("Liquidity sweep BUY")
+    if ls:sell+=15;sell_conf+=1;why.append("Liquidity sweep SELL")
+    if r>=55:buy+=10;buy_conf+=1
+    elif r<=45:sell+=10;sell_conf+=1
+    raw_total=max(buy+sell,1);raw_bp=round(100*buy/raw_total);raw_sp=100-raw_bp
+    if forex:
+        # EUR/USD: confidence is deliberately capped unless several independent confirmations agree.
+        bp=min(raw_bp,95 if buy_conf>=4 else 85 if buy_conf>=3 else 70 if buy_conf>=2 else 55)
+        sp=min(raw_sp,95 if sell_conf>=4 else 85 if sell_conf>=3 else 70 if sell_conf>=2 else 55)
+        side="LONG" if buy_conf>=3 and t5=="UP" and t15=="UP" and bp>=75 and buy>=sell+18 else "SHORT" if sell_conf>=3 and t5=="DOWN" and t15=="DOWN" and sp>=75 and sell>=buy+18 else "WAIT"
+        if side=="WAIT" and max(buy_conf,sell_conf)<3:why.append("أقل من 3 تأكيدات — لا دخول")
+    else:
+        bp=raw_bp;sp=raw_sp;side="LONG" if bp>=68 and buy>=sell+18 else "SHORT" if sp>=68 and sell>=buy+18 else "WAIT"
     if side=="LONG" and res-p<1.15*a:side="WAIT";why.append("مقاومة قريبة — منع مطاردة")
     if side=="SHORT" and p-sup<1.15*a:side="WAIT";why.append("دعم قريب — منع مطاردة")
     ranges=[float(x[2])-float(x[1]) for x in c[-15:-1]];spike=(float(c[-1][2])-float(c[-1][1]))>max(sum(ranges)/len(ranges)*2.5,a*2)
