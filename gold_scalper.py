@@ -249,9 +249,13 @@ def stats_text():
  h=state['history'];n=len(h);w=sum(x.get('max_tp',0)>=1 for x in h);t3=sum(x.get('max_tp',0)>=3 for x in h)
  return f'📊 سجل التعلم: {n} مغلقة | TP1+ {w} ({w/n*100:.1f}%) | TP3 {t3}' if n else '📊 سجل التعلم: لا توجد نتائج مغلقة بعد'
 def open_signal(x):
- sig={'id':state['next_id'],'side':x['side'],'entry':x['p'],'sl':x['sl'],'tps':[x['tp1'],x['tp2'],x['tp3']],'hit':[False]*3,'max_tp':0,'features':x['features'],'buy_pct':x['bp'],'sell_pct':x['sp'],'opened_at':time.time()};state['next_id']+=1;state['active'].append(sig);save_state()
+ if state['active']:
+  print('SIGNAL BLOCKED: an earlier gold signal is still active')
+  return False
+ sig={'id':state['next_id'],'side':x['side'],'entry':x['p'],'sl':x['sl'],'tps':[x['tp1'],x['tp2'],x['tp3']],'hit':[False]*3,'max_tp':0,'features':x['features'],'buy_pct':x['bp'],'sell_pct':x['sp'],'opened_at':time.time()};state['next_id']+=1;state['active'].append(sig);save_state();return True
 def close_signal(sig,result,price):
- sig['result']=result;sig['exit_price']=price;sig['closed_at']=time.time();state['history'].append(sig.copy());state['history']=state['history'][-500:];state['active'].remove(sig);save_state();learn()
+ global last
+ sig['result']=result;sig['exit_price']=price;sig['closed_at']=time.time();state['history'].append(sig.copy());state['history']=state['history'][-500:];state['active'].remove(sig);last=None;save_state();learn()
 def track_live(c):
  if not state['active'] or not c:return
  hi,lo=c['h'],c['l']
@@ -268,7 +272,10 @@ def track_live(c):
   if sig['hit'][2]:close_signal(sig,'TP3',sig['tps'][2]);send(f'🏁 GOLD SIGNAL #{sig["id"]} اكتملت — TP3\n{stats_text()}');continue
   if stop:close_signal(sig,'SL_AFTER_TP'+str(sig['max_tp']) if sig['max_tp'] else 'SL',sig['sl']);send(f'❌ GOLD SIGNAL #{sig["id"]} — SL HIT\n🎯 أعلى هدف: TP{sig["max_tp"]}\n{stats_text()}')
 state=load_state();print('Gold learning state:',STATE_FILE,'history=',len(state['history']),'active=',len(state['active']),'weights=',state['weights'])
-last=None;last_report=0;last_analysis=0
+last=None;last_report=time.time();last_analysis=0
+# A deployment replaces Railway's temporary filesystem. This guard prevents a duplicate signal
+# while the pre-deployment Telegram signal may still be open. Persistent volume support can remove it.
+startup_signal_lock_until=time.time()+21600 if not state['active'] and not state['history'] else 0
 while True:
  poll_commands()
  live=fetch_live()
@@ -279,8 +286,12 @@ while True:
   x=analyze();last_analysis=now
   if x:
    print(f'XAU {x["p"]:.2f} {x["side"]} BUY={x["bp"]}% SELL={x["sp"]}%')
-   periodic=last_report==0 or now-last_report>=REPORT;immediate=x['side'] in ('BUY','SELL') and x['side']!=last
-   if periodic or immediate:send(msg(x));last_report=now if periodic else last_report
-   if immediate:open_signal(x)
-   last=x['side']
+   has_active=bool(state['active'])
+   periodic=(not has_active) and now-last_report>=REPORT
+   immediate=(not has_active) and now>=startup_signal_lock_until and x['side'] in ('BUY','SELL') and x['side']!=last
+   if periodic or immediate:
+    send(msg(x));last_report=now if periodic else last_report
+   if immediate:
+    open_signal(x)
+   if not has_active:last=x['side']
  time.sleep(15)
