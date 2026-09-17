@@ -19,11 +19,6 @@ def candles(g,n):
     try:
         r=SESSION.get("https://api.exchange.coinbase.com/products/BTC-USD/candles",params={"granularity":g},timeout=(5,10),headers={"User-Agent":"ia-crypto-bot/2.0"});r.raise_for_status();x=r.json();x.sort(key=lambda z:z[0]);return x[-n:]
     except Exception as e:print("Coinbase",e);return None
-def hype_candles(interval="5m",limit=120):
-    try:
-        r=SESSION.get("https://api.binance.com/api/v3/klines",params={"symbol":"HYPEUSDT","interval":interval,"limit":limit},timeout=(5,10),headers={"User-Agent":"ia-crypto-bot/2.2"});r.raise_for_status()
-        return [[int(z[0]/1000),float(z[3]),float(z[2]),float(z[1]),float(z[4]),float(z[5])] for z in r.json()]
-    except Exception as e:print("Binance HYPE",e);return None
 def eur_candles(interval="5m",limit=120):
     try:
         r=SESSION.get("https://query1.finance.yahoo.com/v8/finance/chart/EURUSD=X",params={"range":"5d","interval":interval,"includePrePost":"false"},timeout=(5,15),headers={"User-Agent":"Mozilla/5.0 ia-crypto-bot/2.3"});r.raise_for_status();j=r.json()["chart"]["result"][0];ts=j.get("timestamp",[]);q=j["indicators"]["quote"][0];out=[]
@@ -141,7 +136,6 @@ def scalp_analysis(c5,c15,forex=False):
     if spike:side="WAIT";why.append("تقلب غير طبيعي")
     risk=max(a*1.5,p*(.0008 if forex else .003));sl=p-risk if side=="LONG" else p+risk if side=="SHORT" else None;tp=p+risk*2 if side=="LONG" else p-risk*2 if side=="SHORT" else None
     return locals()
-def analyze_hype():return scalp_analysis(hype_candles("5m",120),hype_candles("15m",120))
 def analyze_eur():return scalp_analysis(eur_candles("5m",120),eur_candles("15m",120),True)
 def ar(x):return {"LONG":"🟢 شراء","SHORT":"🔴 بيع","WAIT":"🟡 انتظار","UP":"صاعد","DOWN":"هابط","MIXED":"مختلط","RANGE":"عرضي","POSITIVE":"إيجابي","NEGATIVE":"سلبي","NEUTRAL":"محايد"}.get(x,x)
 def msg(x):
@@ -150,22 +144,17 @@ def msg(x):
 def scalp_msg(x,name,price_digits=3):
     f=lambda v:f'{v:.{price_digits}f}';risk="لا دخول مؤكد" if x["side"]=="WAIT" else f'🛑 SL: {f(x["sl"])}\n🎯 TP: {f(x["tp"])}'
     return f'{name}\n\n🎯 القرار: {ar(x["side"])}\n💰 السعر: {f(x["p"])}\n🟢 ميل الشراء: {x["bp"]}% | 🔴 ميل البيع: {x["sp"]}%\n⏱ 5m/15m: {ar(x["t5"])} / {ar(x["t15"])}\n📐 الهيكل 5m: {ar(x["st"])}\n💧 Liquidity: {"Sweep BUY" if x["lb"] else "Sweep SELL" if x["ls"] else "لا Sweep مؤكد"}\n📈 RSI 5m: {x["r"]:.1f} | ATR: {f(x["a"])}\n🟢 دعم: {f(x["sup"])} | 🔴 مقاومة: {f(x["res"])}\n{risk}\n🧠 {"؛ ".join(x["why"][:5]) if x["why"] else "توافق محدود"}\n\n⚠️ إشارة تحليلية فقط وليست ضمان ربح.'
-last=None;last_hype=None;last_eur=None;last_report=0;last_hype_report=0;last_eur_report=0
+last=None;last_eur=None;last_report=0;last_eur_report=0
 while True:
     print("LOOP START")
     now=time.time()
     x=run_with_timeout(analyze,20,"BTC analyze")
-    h=run_with_timeout(analyze_hype,20,"HYPE analyze")
     e=run_with_timeout(analyze_eur,25,"EURUSD analyze")
     print("HEARTBEAT")
     if x:
         print(f'BTC {x["p"]:.2f} {x["side"]} BUY={x["bp"]}% SELL={x["sp"]}%');periodic=last_report==0 or now-last_report>=REPORT;immediate=x["side"] in ("LONG","SHORT") and x["side"]!=last
         if periodic or immediate:send(msg(x));last_report=now if periodic else last_report
         last=x["side"]
-    if h:
-        print(f'HYPE {h["p"]:.3f} {h["side"]} BUY={h["bp"]}% SELL={h["sp"]}%');periodic=last_hype_report==0 or now-last_hype_report>=REPORT;immediate=h["side"] in ("LONG","SHORT") and h["side"]!=last_hype
-        if periodic or immediate:send(scalp_msg(h,"⚡ HYPE SCALP MONITOR",3));last_hype_report=now if periodic else last_hype_report
-        last_hype=h["side"]
     if e:
         print(f'EURUSD {e["p"]:.5f} {e["side"]} BUY={e["bp"]}% SELL={e["sp"]}%');periodic=last_eur_report==0 or now-last_eur_report>=REPORT;immediate=e["side"] in ("LONG","SHORT") and e["side"]!=last_eur
         if periodic or immediate:send(scalp_msg(e,"💶 EUR/USD SCALP MONITOR",5));last_eur_report=now if periodic else last_eur_report
