@@ -2,6 +2,7 @@ import os,time,re,xml.etree.ElementTree as ET,requests
 from requests.adapters import HTTPAdapter
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 TOKEN=os.getenv("TELEGRAM_BOT_TOKEN");CHAT=os.getenv("TELEGRAM_CHAT_ID");REPORT=900
+PAPER_MODE=os.getenv("CRYPTO_PAPER_MODE","true").strip().lower() not in ("0","false","off","no")
 SESSION=requests.Session();_adapter=HTTPAdapter(pool_connections=10,pool_maxsize=10);SESSION.mount("https://",_adapter);SESSION.mount("http://",_adapter)
 EXECUTOR=ThreadPoolExecutor(max_workers=3)
 def run_with_timeout(fn,timeout,name):
@@ -27,6 +28,14 @@ def eur_candles(interval="5m",limit=120):
             if None not in (o,h,l,c):out.append([int(t),float(l),float(h),float(o),float(c),0.0])
         return out[-limit:]
     except Exception as e:print("EURUSD feed",e);return None
+def jpy_candles(interval="5m",limit=120):
+    try:
+        r=SESSION.get("https://query1.finance.yahoo.com/v8/finance/chart/JPY=X",params={"range":"5d","interval":interval,"includePrePost":"false"},timeout=(5,15),headers={"User-Agent":"Mozilla/5.0 ia-crypto-bot/3.0"});r.raise_for_status();j=r.json()["chart"]["result"][0];ts=j.get("timestamp",[]);q=j["indicators"]["quote"][0];out=[]
+        for i,t in enumerate(ts):
+            o=q["open"][i];h=q["high"][i];l=q["low"][i];c=q["close"][i]
+            if None not in (o,h,l,c):out.append([int(t),float(l),float(h),float(o),float(c),0.0])
+        return out[-limit:]
+    except Exception as e:print("USDJPY feed",e);return None
 def build4(h):
     b={}
     for x in h or []:k=int(x[0])-(int(x[0])%14400);b.setdefault(k,[]).append(x)
@@ -137,6 +146,27 @@ def scalp_analysis(c5,c15,forex=False):
     risk=max(a*1.5,p*(.0008 if forex else .003));sl=p-risk if side=="LONG" else p+risk if side=="SHORT" else None;tp=p+risk*2 if side=="LONG" else p-risk*2 if side=="SHORT" else None
     return locals()
 def analyze_eur():return scalp_analysis(eur_candles("5m",120),eur_candles("15m",120),True)
+def analyze_jpy():return scalp_analysis(jpy_candles("5m",120),jpy_candles("15m",120),True)
+
+paper={}
+def paper_track(symbol,x):
+    if not PAPER_MODE or symbol not in paper or not x:return
+    q=paper[symbol];bar=int(x["c"][-1][0])
+    if bar<=q["opened_bar"] or bar<=q.get("last_bar",0):return
+    q["last_bar"]=bar;hi=float(x["c"][-1][2]);lo=float(x["c"][-1][1])
+    stop=lo<=q["sl"] if q["side"]=="LONG" else hi>=q["sl"]
+    target=hi>=q["tp"] if q["side"]=="LONG" else lo<=q["tp"]
+    if not (stop or target):return
+    result="SL_AMBIGUOUS" if stop and target else "TP" if target else "SL";exit_price=q["sl"] if stop else q["tp"];delta=(exit_price-q["entry"]) if q["side"]=="LONG" else (q["entry"]-exit_price)
+    print(f'PAPER CLOSE {symbol} {result} entry={q["entry"]:.6f} exit={exit_price:.6f} delta={delta:.6f}')
+    send(f'🧪 نتيجة صفقة تجريبية — {symbol} — لا تدخل بأموال حقيقية\n🎯 النتيجة: {result}\n📍 Entry: {q["entry"]:.6f}\n🚪 Exit: {exit_price:.6f}\n📊 الحركة: {delta:.6f}')
+    del paper[symbol]
+def paper_open(symbol,x,message):
+    if not PAPER_MODE or not x or x["side"] not in ("LONG","SHORT") or symbol in paper:return False
+    q={"side":x["side"],"entry":x["p"],"sl":x["sl"],"tp":x["tp"],"opened_at":time.time(),"opened_bar":int(x["c"][-1][0]),"last_bar":0};paper[symbol]=q
+    print(f'PAPER OPEN {symbol} {q["side"]} entry={q["entry"]:.6f} sl={q["sl"]:.6f} tp={q["tp"]:.6f}')
+    send("🧪 صفقة تجريبية — لا تدخل بأموال حقيقية\n\n"+message);return True
+
 def ar(x):return {"LONG":"🟢 شراء","SHORT":"🔴 بيع","WAIT":"🟡 انتظار","UP":"صاعد","DOWN":"هابط","MIXED":"مختلط","RANGE":"عرضي","POSITIVE":"إيجابي","NEGATIVE":"سلبي","NEUTRAL":"محايد"}.get(x,x)
 def msg(x):
     risk="لا دخول مؤكد" if x["side"]=="WAIT" else f'🛑 SL: ${x["sl"]:.2f}\n🎯 TP: ${x["tp"]:.2f}'
@@ -144,19 +174,33 @@ def msg(x):
 def scalp_msg(x,name,price_digits=3):
     f=lambda v:f'{v:.{price_digits}f}';risk="لا دخول مؤكد" if x["side"]=="WAIT" else f'🛑 SL: {f(x["sl"])}\n🎯 TP: {f(x["tp"])}'
     return f'{name}\n\n🎯 القرار: {ar(x["side"])}\n💰 السعر: {f(x["p"])}\n🟢 ميل الشراء: {x["bp"]}% | 🔴 ميل البيع: {x["sp"]}%\n⏱ 5m/15m: {ar(x["t5"])} / {ar(x["t15"])}\n📐 الهيكل 5m: {ar(x["st"])}\n💧 Liquidity: {"Sweep BUY" if x["lb"] else "Sweep SELL" if x["ls"] else "لا Sweep مؤكد"}\n📈 RSI 5m: {x["r"]:.1f} | ATR: {f(x["a"])}\n🟢 دعم: {f(x["sup"])} | 🔴 مقاومة: {f(x["res"])}\n{risk}\n🧠 {"؛ ".join(x["why"][:5]) if x["why"] else "توافق محدود"}\n\n⚠️ إشارة تحليلية فقط وليست ضمان ربح.'
-last=None;last_eur=None;last_report=0;last_eur_report=0
+last=None;last_eur=None;last_jpy=None;last_report=0;last_eur_report=0;last_jpy_report=0
 while True:
     print("LOOP START")
     now=time.time()
     x=run_with_timeout(analyze,20,"BTC analyze")
     e=run_with_timeout(analyze_eur,25,"EURUSD analyze")
+    j=run_with_timeout(analyze_jpy,25,"USDJPY analyze")
     print("HEARTBEAT")
     if x:
         print(f'BTC {x["p"]:.2f} {x["side"]} BUY={x["bp"]}% SELL={x["sp"]}%');periodic=last_report==0 or now-last_report>=REPORT;immediate=x["side"] in ("LONG","SHORT") and x["side"]!=last
-        if periodic or immediate:send(msg(x));last_report=now if periodic else last_report
+        if PAPER_MODE:
+            paper_track("BTC/USD",x);paper_open("BTC/USD",x,msg(x))
+        elif periodic or immediate:send(msg(x))
+        if periodic:last_report=now
         last=x["side"]
     if e:
         print(f'EURUSD {e["p"]:.5f} {e["side"]} BUY={e["bp"]}% SELL={e["sp"]}%');periodic=last_eur_report==0 or now-last_eur_report>=REPORT;immediate=e["side"] in ("LONG","SHORT") and e["side"]!=last_eur
-        if periodic or immediate:send(scalp_msg(e,"💶 EUR/USD SCALP MONITOR",5));last_eur_report=now if periodic else last_eur_report
+        if PAPER_MODE:
+            paper_track("EUR/USD",e);paper_open("EUR/USD",e,scalp_msg(e,"💶 EUR/USD SCALP MONITOR",5))
+        elif periodic or immediate:send(scalp_msg(e,"💶 EUR/USD SCALP MONITOR",5))
+        if periodic:last_eur_report=now
         last_eur=e["side"]
+    if j:
+        print(f'USDJPY {j["p"]:.3f} {j["side"]} BUY={j["bp"]}% SELL={j["sp"]}%');periodic=last_jpy_report==0 or now-last_jpy_report>=REPORT;immediate=j["side"] in ("LONG","SHORT") and j["side"]!=last_jpy
+        if PAPER_MODE:
+            paper_track("USD/JPY",j);paper_open("USD/JPY",j,scalp_msg(j,"💴 USD/JPY SCALP MONITOR",3))
+        elif periodic or immediate:send(scalp_msg(j,"💴 USD/JPY SCALP MONITOR",3))
+        if periodic:last_jpy_report=now
+        last_jpy=j["side"]
     time.sleep(60)
