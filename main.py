@@ -10,6 +10,11 @@ def candles(g,n):
     try:
         r=requests.get("https://api.exchange.coinbase.com/products/BTC-USD/candles",params={"granularity":g},timeout=15,headers={"User-Agent":"ia-crypto-bot/2.0"});r.raise_for_status();x=r.json();x.sort(key=lambda z:z[0]);return x[-n:]
     except Exception as e:print("Coinbase",e);return None
+def hype_candles(interval="5m",limit=120):
+    try:
+        r=requests.get("https://api.binance.com/api/v3/klines",params={"symbol":"HYPEUSDT","interval":interval,"limit":limit},timeout=15,headers={"User-Agent":"ia-crypto-bot/2.1"});r.raise_for_status()
+        return [[int(z[0]/1000),float(z[3]),float(z[2]),float(z[1]),float(z[4]),float(z[5])] for z in r.json()]
+    except Exception as e:print("Binance HYPE",e);return None
 def build4(h):
     b={}
     for x in h or []:k=int(x[0])-(int(x[0])%14400);b.setdefault(k,[]).append(x)
@@ -86,23 +91,52 @@ def analyze():
     if rd=="POSITIVE":buy+=3
     elif rd=="NEGATIVE":sell+=3
     total=max(buy+sell,1);bp=round(100*buy/total);sp=100-bp;side="LONG" if bp>=65 and buy>=sell+15 else "SHORT" if sp>=65 and sell>=buy+15 else "WAIT"
-    # Anti-chase: do not enter directly into nearby opposing structure.
     if side=="LONG" and res-p<1.10*a:side="WAIT";why.append("مقاومة قريبة — منع مطاردة السعر")
     if side=="SHORT" and p-sup<1.10*a:side="WAIT";why.append("دعم قريب — منع مطاردة السعر")
     ranges=[float(x[2])-float(x[1]) for x in c[-15:-1]];spike=(float(c[-1][2])-float(c[-1][1]))>max(sum(ranges)/len(ranges)*2.5,a*2)
     if spike:side="WAIT";why.append("تقلب غير طبيعي")
     risk=max(a*1.4,p*.0025);sl=p-risk if side=="LONG" else p+risk if side=="SHORT" else None;tp=p+risk*2 if side=="LONG" else p-risk*2 if side=="SHORT" else None
     return locals()
+def analyze_hype():
+    c5=hype_candles("5m",120);c15=hype_candles("15m",120);s5=snap(c5);s15=snap(c15)
+    if not all((s5,s15)):return None
+    c=s5["c"];p=s5["p"];a=atr(c);r=s5["r"];t5,t15=trend(s5),trend(s15);st=structure(c);lb,ls=liquidity(c);vol=[float(x[5]) for x in c];vr=vol[-1]/(sum(vol[-21:-1])/20 or 1);recent=c[-30:];sup=min(float(x[1]) for x in recent);res=max(float(x[2]) for x in recent);buy=sell=0;why=[]
+    if t5=="UP":buy+=25
+    elif t5=="DOWN":sell+=25
+    if t15=="UP":buy+=25
+    elif t15=="DOWN":sell+=25
+    if st=="UP":buy+=15;why.append("هيكل 5m صاعد")
+    elif st=="DOWN":sell+=15;why.append("هيكل 5m هابط")
+    if lb:buy+=15;why.append("Liquidity sweep BUY")
+    if ls:sell+=15;why.append("Liquidity sweep SELL")
+    if r>=55:buy+=10
+    elif r<=45:sell+=10
+    if vr>=1.15:
+        if t5=="UP":buy+=10;why.append("حجم شراء مرتفع")
+        elif t5=="DOWN":sell+=10;why.append("حجم بيع مرتفع")
+    total=max(buy+sell,1);bp=round(100*buy/total);sp=100-bp;side="LONG" if bp>=68 and buy>=sell+18 else "SHORT" if sp>=68 and sell>=buy+18 else "WAIT"
+    if side=="LONG" and res-p<1.15*a:side="WAIT";why.append("مقاومة قريبة — منع مطاردة")
+    if side=="SHORT" and p-sup<1.15*a:side="WAIT";why.append("دعم قريب — منع مطاردة")
+    ranges=[float(x[2])-float(x[1]) for x in c[-15:-1]];spike=(float(c[-1][2])-float(c[-1][1]))>max(sum(ranges)/len(ranges)*2.5,a*2)
+    if spike:side="WAIT";why.append("تقلب غير طبيعي")
+    risk=max(a*1.5,p*.003);sl=p-risk if side=="LONG" else p+risk if side=="SHORT" else None;tp=p+risk*2 if side=="LONG" else p-risk*2 if side=="SHORT" else None
+    return locals()
 def ar(x):return {"LONG":"🟢 شراء","SHORT":"🔴 بيع","WAIT":"🟡 انتظار","UP":"صاعد","DOWN":"هابط","MIXED":"مختلط","RANGE":"عرضي","POSITIVE":"إيجابي","NEGATIVE":"سلبي","NEUTRAL":"محايد"}.get(x,x)
 def msg(x):
     risk="لا دخول مؤكد" if x["side"]=="WAIT" else f'🛑 SL: ${x["sl"]:.2f}\n🎯 TP: ${x["tp"]:.2f}'
     return f'₿ BTC ANALYST PRO\n\n🎯 القرار: {ar(x["side"])}\n💰 ${x["p"]:.2f}\n🟢 ميل الشراء: {x["bp"]}% | 🔴 ميل البيع: {x["sp"]}%\n📐 الهيكل 15m: {ar(x["st"])}\n⏱ 15m/1h/4h: {ar(x["t15"])} / {ar(x["t1"])} / {ar(x["t4"])}\n💧 Liquidity: {"Sweep BUY" if x["lb"] else "Sweep SELL" if x["ls"] else "لا Sweep مؤكد"}\n📈 RSI: {x["r"]:.1f} | ATR: {x["a"]:.2f}\n📦 Volume: {x["vr"]:.2f}x\n🟢 دعم: ${x["sup"]:.0f} | 🔴 مقاومة: ${x["res"]:.0f}\n📰 أخبار: {ar(x["n"])} | Reddit: {ar(x["rd"])}\n{risk}\n🧠 {"؛ ".join(x["why"][:5]) if x["why"] else "توافق محدود"}\n\n⚠️ الميل ليس احتمال ربح، والإشارة تحليلية فقط.'
-last=None;last_report=0
+def hype_msg(x):
+    risk="لا دخول مؤكد" if x["side"]=="WAIT" else f'🛑 SL: ${x["sl"]:.3f}\n🎯 TP: ${x["tp"]:.3f}'
+    return f'⚡ HYPE SCALP MONITOR\n\n🎯 القرار: {ar(x["side"])}\n💰 HYPE: ${x["p"]:.3f}\n🟢 ميل الشراء: {x["bp"]}% | 🔴 ميل البيع: {x["sp"]}%\n⏱ 5m/15m: {ar(x["t5"])} / {ar(x["t15"])}\n📐 الهيكل 5m: {ar(x["st"])}\n💧 Liquidity: {"Sweep BUY" if x["lb"] else "Sweep SELL" if x["ls"] else "لا Sweep مؤكد"}\n📈 RSI 5m: {x["r"]:.1f} | ATR: {x["a"]:.3f}\n📦 Volume: {x["vr"]:.2f}x\n🟢 دعم قصير: ${x["sup"]:.3f} | 🔴 مقاومة قصيرة: ${x["res"]:.3f}\n{risk}\n🧠 {"؛ ".join(x["why"][:5]) if x["why"] else "توافق محدود"}\n\n⚠️ إشارة تحليلية فقط وليست ضمان ربح.'
+last=None;last_hype=None;last_report=0;last_hype_report=0
 while True:
-    x=analyze()
+    now=time.time();x=analyze();h=analyze_hype()
     if x:
-        now=time.time();print(f'BTC {x["p"]:.2f} {x["side"]} BUY={x["bp"]}% SELL={x["sp"]}%')
-        periodic=last_report==0 or now-last_report>=REPORT;immediate=x["side"] in ("LONG","SHORT") and x["side"]!=last
+        print(f'BTC {x["p"]:.2f} {x["side"]} BUY={x["bp"]}% SELL={x["sp"]}%');periodic=last_report==0 or now-last_report>=REPORT;immediate=x["side"] in ("LONG","SHORT") and x["side"]!=last
         if periodic or immediate:send(msg(x));last_report=now if periodic else last_report
         last=x["side"]
+    if h:
+        print(f'HYPE {h["p"]:.3f} {h["side"]} BUY={h["bp"]}% SELL={h["sp"]}%');periodic=last_hype_report==0 or now-last_hype_report>=REPORT;immediate=h["side"] in ("LONG","SHORT") and h["side"]!=last_hype
+        if periodic or immediate:send(hype_msg(h));last_hype_report=now if periodic else last_hype_report
+        last_hype=h["side"]
     time.sleep(60)
