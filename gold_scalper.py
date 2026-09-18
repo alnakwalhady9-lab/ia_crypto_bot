@@ -424,7 +424,7 @@ def open_signal(x,live=None):
  sig={'id':state['next_id'],'side':x['side'],'entry':entry,'sl':sl,'tps':tps,'hit':[False]*3,'max_tp':0,'features':x['features'],'buy_pct':x['bp'],'sell_pct':x['sp'],'opened_at':time.time(),'opened_bar':bar,'opened_live_t':str((live or {}).get('t',''))};state['next_id']+=1;state['last_open_bar']=bar;state['active'].append(sig);save_state();print(f'PAPER OPEN #{sig["id"]} {sig["side"]} entry={sig["entry"]:.2f} sl={sig["sl"]:.2f} tp1={sig["tps"][0]:.2f} tp2={sig["tps"][1]:.2f} tp3={sig["tps"][2]:.2f}');return True
 def close_signal(sig,result,price):
  global last
- sig['result']=result;sig['exit_price']=price;sig['closed_at']=time.time();state['history'].append(sig.copy());state['history']=state['history'][-500:];state['active'].remove(sig);last=None;save_state();learn()
+ sig['result']=result;sig['exit_price']=price;sig['closed_at']=time.time();state['last_closed_at']=sig['closed_at'];state['history'].append(sig.copy());state['history']=state['history'][-500:];state['active'].remove(sig);last=None;save_state();learn()
 def track_live(c):
  if not state['active'] or not c:return
  for sig in list(state['active']):
