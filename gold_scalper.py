@@ -7,9 +7,9 @@ STARTED_AT=time.time()
 URL='https://quote.alltick.co/quote-b-api/kline';REPORT=900;cache={};TTL={'5min':300,'15min':900,'1h':3600}
 KLINE_TYPE={'5min':2,'15min':3,'1h':5}
 MIN_API_GAP=11;last_api_request=0
-DATA_DIR='/data' if os.path.isdir('/data') and os.access('/data',os.W_OK) else '.';STATE_FILE=os.path.join(DATA_DIR,'gold_learning_state.json');SUB_FILE=os.path.join(DATA_DIR,'gold_subscribers.json');INVITE_FILE=os.path.join(DATA_DIR,'gold_invite.json')
+DATA_DIR='/data' if os.path.isdir('/data') and os.access('/data',os.W_OK) else '.';STATE_FILE=os.path.join(DATA_DIR,'gold_learning_state.json');SUB_FILE=os.path.join(DATA_DIR,'gold_subscribers.json');INVITE_FILE=os.path.join(DATA_DIR,'gold_invite.json');NEWS_SEEN_FILE=os.path.join(DATA_DIR,'gold_news_seen.json')
 BASE={'trend5':14,'trend15':16,'trend1h':5,'structure5':14,'structure15':10,'liquidity':20,'equal_liq':4,'price_action':12,'breakout':18,'harmonic5':18,'harmonic15':12,'rsi':7}
-NEWS_REFRESH=60;NEWS_BLOCK_MINUTES=12;news_cache={'t':0,'v':{'bias':'NEUTRAL','score':0,'block':False,'headline':'لا خبر عاجل مؤكد','items':[]}};news_seen=set()
+NEWS_REFRESH=60;NEWS_BLOCK_MINUTES=12;news_cache={'t':0,'v':{'bias':'NEUTRAL','score':0,'block':False,'headline':'لا خبر عاجل مؤكد','items':[]}}
 ESCALATION={'attack','attacks','strike','strikes','bomb','missile','drone','retaliation','escalat','blockade','hormuz','killed','war expands','military action','threatens'}
 EASING={'ceasefire','deal','talks','negotiat','peace','war nearing end','towards end','toward end','de-escalat','agreement','diplomacy'}
 def load_subscribers():
@@ -46,8 +46,28 @@ def trade_send(m):
  clean=str(m).replace('\\n',' | ')
  if PAPER_MODE:
   print('PAPER RESULT:',clean)
-  send('🧪 نتيجة صفقة تجريبية — لا تدخل بأموال حقيقية\\n'+str(m))
+  send('🧪 نتيجة صفقة تجريبية — لا تدخل بأموال حقيقية\n'+str(m))
  else:send(m)
+def news_key(title):
+ # Ignore case, spacing and the publisher suffix so syndicated copies of the
+ # same headline are treated as one alert.
+ title=str(title or '').replace('\\n',' ').replace('\\r',' ')
+ title=re.sub(r'\s+',' ',title).strip().lower()
+ title=re.sub(r'\s+-\s+[^-]{2,45}$','',title)
+ return re.sub(r'[^a-z0-9]+',' ',title).strip()
+def load_news_seen():
+ try:
+  with open(NEWS_SEEN_FILE) as f:data=json.load(f)
+  cutoff=time.time()-86400
+  return {'last_sent':float(data.get('last_sent',0)),'keys':{str(k):float(v) for k,v in data.get('keys',{}).items() if float(v)>=cutoff}}
+ except:return {'last_sent':0,'keys':{}}
+def save_news_seen():
+ try:
+  tmp=NEWS_SEEN_FILE+'.tmp'
+  with open(tmp,'w') as f:json.dump(news_seen,f)
+  os.replace(tmp,NEWS_SEEN_FILE)
+ except Exception as e:print('News seen',e)
+news_seen=load_news_seen()
 def poll_commands():
  global telegram_offset,INVITE_CODE
  if not TOKEN:return
@@ -248,7 +268,7 @@ def geopolitical_news():
   r=requests.get(url,timeout=(5,15),headers={'User-Agent':'Mozilla/5.0 GOLD-SCALPER/3.0'});r.raise_for_status()
   root=ET.fromstring(r.content)
   for item in root.findall('.//item')[:25]:
-   title=re.sub(r'\\s+',' ',item.findtext('title') or '').strip()
+   title=re.sub(r'\s+',' ',item.findtext('title') or '').strip()
    pub=item.findtext('pubDate') or ''
    low=title.lower()
    if not title or not any(k in low for k in ('iran','trump','hormuz','israel','gulf','houthi')):continue
@@ -267,12 +287,16 @@ def geopolitical_news():
 
 def notify_breaking(news):
  if not news.get('block'):return
- title=news.get('headline','')
- if not title or title in news_seen:return
- news_seen.add(title)
- if len(news_seen)>100:news_seen.clear();news_seen.add(title)
+ title=str(news.get('headline','')).replace('\\n',' ').replace('\\r',' ')
+ title=re.sub(r'\s+',' ',title).strip();key=news_key(title);now=time.time()
+ if not key or key in news_seen['keys']:return
+ # Do not flood Telegram with several rewrites of the same developing story.
+ if now-news_seen['last_sent']<NEWS_BLOCK_MINUTES*60:return
+ news_seen['keys'][key]=now;news_seen['last_sent']=now
+ news_seen['keys']={k:v for k,v in news_seen['keys'].items() if v>=now-86400}
+ save_news_seen()
  mood='تصعيد — دعم محتمل للذهب' if news['bias']=='ESCALATION' else 'تهدئة — ضغط محتمل على الذهب' if news['bias']=='EASING' else 'متضارب'
- send(f'🚨 خبر عاجل مؤثر على الذهب\\n{title}\\n📰 التصنيف: {mood}\\n⚡ تم تفعيل NEWS SCALP: ننتظر تأكيد حركة السعر قبل الدخول؛ لا دخول عشوائي وقت السبريد العالي.')
+ send(f'🚨 خبر عاجل مؤثر على الذهب\n{title}\n📰 التصنيف: {mood}\n⚡ تم تفعيل NEWS SCALP: ننتظر تأكيد حركة السعر قبل الدخول؛ لا دخول عشوائي وقت السبريد العالي.')
 
 def default_state():return {'next_id':1,'active':[],'history':[],'weights':{k:1.0 for k in BASE},'last_learn_count':0,'last_open_bar':None,'last_closed_at':0}
 def load_state():
@@ -460,7 +484,7 @@ while True:
    opened=open_signal(x,live) if immediate else False
    if PAPER_MODE:
     if opened:
-     send('🧪 صفقة تجريبية — لا تدخل بأموال حقيقية\\n\\n'+msg(x))
+     send('🧪 صفقة تجريبية — لا تدخل بأموال حقيقية\n\n'+msg(x))
     if periodic:last_report=now
    elif periodic or opened:
     send(msg(x))
