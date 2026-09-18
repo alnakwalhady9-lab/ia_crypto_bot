@@ -426,7 +426,10 @@ def track_live(c):
   # On the opening candle, its recorded high/low may predate the entry.
   # Use only the live price until a new candle begins.
   same_candle=str(c.get('t',''))==str(sig.get('opened_live_t',''))
-  hi=lo=float(c['c']) if same_candle else (float(c['h']),float(c['l']))
+  if same_candle:
+   hi=lo=float(c['c'])
+  else:
+   hi=float(c['h']);lo=float(c['l'])
   stop=lo<=sig['sl'] if sig['side']=='BUY' else hi>=sig['sl']
   tp3=hi>=sig['tps'][2] if sig['side']=='BUY' else lo<=sig['tps'][2]
   # If SL and TP3 are both inside the same 1m candle, ordering is unknown: record the conservative SL outcome.
