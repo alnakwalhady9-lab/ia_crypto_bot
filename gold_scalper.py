@@ -461,7 +461,7 @@ while True:
    print(f'XAU {x["p"]:.2f} {x["side"]} BUY={x["bp"]}% SELL={x["sp"]}%')
    has_active=bool(state['active'])
    periodic=last_report==0 or now-last_report>=REPORT
-   immediate=(not has_active) and x['side'] in ('BUY','SELL') and x['side']!=last
+   immediate=(not has_active) and x['side'] in ('BUY','SELL')
    opened=open_signal(x,live) if immediate else False
    if PAPER_MODE:
     if opened:
