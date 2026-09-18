@@ -6,7 +6,7 @@ PAPER_MODE=os.getenv('GOLD_PAPER_MODE','true').strip().lower() not in ('0','fals
 STARTED_AT=time.time()
 URL='https://quote.alltick.co/quote-b-api/kline';REPORT=900;cache={};TTL={'5min':300,'15min':900,'1h':3600}
 KLINE_TYPE={'5min':2,'15min':3,'1h':5}
-MIN_API_GAP=11;last_api_request=0
+MIN_API_GAP=15;API_BACKOFF=300;last_api_request=0;api_blocked_until=0
 DATA_DIR='/data' if os.path.isdir('/data') and os.access('/data',os.W_OK) else '.';STATE_FILE=os.path.join(DATA_DIR,'gold_learning_state.json');SUB_FILE=os.path.join(DATA_DIR,'gold_subscribers.json');INVITE_FILE=os.path.join(DATA_DIR,'gold_invite.json');NEWS_SEEN_FILE=os.path.join(DATA_DIR,'gold_news_seen.json')
 BASE={'trend5':14,'trend15':16,'trend1h':5,'structure5':14,'structure15':10,'liquidity':20,'equal_liq':4,'price_action':12,'breakout':18,'harmonic5':18,'harmonic15':12,'rsi':7}
 NEWS_REFRESH=60;NEWS_BLOCK_MINUTES=15;news_cache={'t':0,'v':{'bias':'NEUTRAL','score':0,'block':False,'headline':'لا خبر عاجل مؤكد','items':[]}}
@@ -95,9 +95,10 @@ def poll_commands():
     tg_send(cid,'⛔ تم إيقاف إشارات الذهب.')
  except Exception as e:print('Telegram updates error:',type(e).__name__)
 def fetch(sym,tf,n=200):
-    global last_api_request
+    global last_api_request,api_blocked_until
     k=f'{sym}:{tf}';now=time.time()
     if k in cache and now-cache[k][0]<TTL[tf]: return cache[k][1]
+    if now<api_blocked_until:return cache.get(k,(0,None))[1]
     try:
         if not KEY:
             print('AllTick: ALLTICK_API_TOKEN is missing')
@@ -122,12 +123,18 @@ def fetch(sym,tf,n=200):
             timeout=(5,20)
         )
         if r.status_code==429:
-            print('AllTick rate limit (429); retrying later')
+            api_blocked_until=time.time()+API_BACKOFF
+            print('AllTick rate limit (429); backing off 5 minutes')
             return cache.get(k,(0,None))[1]
         if not r.ok:
             print('AllTick HTTP error:',r.status_code)
             return cache.get(k,(0,None))[1]
         payload=r.json()
+        provider_msg=str(payload.get('msg') or payload.get('message') or '').lower()
+        if 'too many requests' in provider_msg or 'rate limit' in provider_msg:
+            api_blocked_until=time.time()+API_BACKOFF
+            print('AllTick rate limit payload; backing off 5 minutes')
+            return cache.get(k,(0,None))[1]
         rows=(payload.get('data') or {}).get('kline_list') or []
         out=[]
         for z in rows:
@@ -153,21 +160,30 @@ def fetch(sym,tf,n=200):
 
 live_cache=[0,None]
 def fetch_live():
- # Refresh the live candle every 30 seconds so TP/SL alerts are timely,
- # while keeping API usage controlled.
- global last_api_request
+ # Refresh the live candle every 60 seconds; this stays timely enough for
+ # paper TP/SL tracking while respecting the provider's free-tier limits.
+ global last_api_request,api_blocked_until
  now=time.time()
- if live_cache[1] is not None and now-live_cache[0]<30:
+ if live_cache[1] is not None and now-live_cache[0]<60:
   return live_cache[1]
  try:
-  if not KEY:return live_cache[1]
+  if not KEY or now<api_blocked_until:return live_cache[1]
   query={'trace':str(uuid.uuid4()),'data':{'code':'GOLD','kline_type':KLINE_TYPE['5min'],'kline_timestamp_end':0,'query_kline_num':2,'adjust_type':0}}
   wait_for=MIN_API_GAP-(time.time()-last_api_request)
   if wait_for>0:time.sleep(wait_for)
   last_api_request=time.time()
   r=requests.get(URL,params={'token':KEY,'query':json.dumps(query,separators=(',',':'))},timeout=(5,20))
+  if r.status_code==429:
+   api_blocked_until=time.time()+API_BACKOFF
+   print('AllTick live rate limit (429); backing off 5 minutes')
+   return live_cache[1]
   if not r.ok:return live_cache[1]
-  rows=(r.json().get('data') or {}).get('kline_list') or []
+  payload=r.json();provider_msg=str(payload.get('msg') or payload.get('message') or '').lower()
+  if 'too many requests' in provider_msg or 'rate limit' in provider_msg:
+   api_blocked_until=time.time()+API_BACKOFF
+   print('AllTick live rate limit payload; backing off 5 minutes')
+   return live_cache[1]
+  rows=(payload.get('data') or {}).get('kline_list') or []
   if not rows:return live_cache[1]
   z=max(rows,key=lambda q:int(q.get('timestamp') or 0))
   candle={'t':z.get('timestamp'),'o':float(z['open_price']),'h':float(z['high_price']),'l':float(z['low_price']),'c':float(z['close_price'])}
