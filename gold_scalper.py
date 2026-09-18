@@ -1,6 +1,6 @@
-import os,time,json,secrets,requests,uuid,re,xml.etree.ElementTree as ET
+import os,time,json,secrets,requests,uuid,re,datetime,xml.etree.ElementTree as ET
 from urllib.parse import quote_plus
-TOKEN=os.getenv('GOLD_TELEGRAM_BOT_TOKEN');CHAT=os.getenv('GOLD_TELEGRAM_CHAT_ID');KEY=os.getenv('ALLTICK_API_TOKEN');INVITE=os.getenv('GOLD_INVITE_CODE')
+TOKEN=os.getenv('GOLD_TELEGRAM_BOT_TOKEN');CHAT=os.getenv('GOLD_TELEGRAM_CHAT_ID');KEY=os.getenv('ALLTICK_API_TOKEN');TWELVE=os.getenv('TWELVE_DATA_API_KEY');INVITE=os.getenv('GOLD_INVITE_CODE')
 # Safety default: paper-test every signal and never broadcast entries until explicitly approved.
 PAPER_MODE=os.getenv('GOLD_PAPER_MODE','true').strip().lower() not in ('0','false','off','no')
 STARTED_AT=time.time()
@@ -94,11 +94,46 @@ def poll_commands():
      SUBSCRIBERS.remove(cid);save_subscribers()
     tg_send(cid,'⛔ تم إيقاف إشارات الذهب.')
  except Exception as e:print('Telegram updates error:',type(e).__name__)
+def fetch_twelve(tf,n=200):
+    if not TWELVE:
+        print('Twelve Data: TWELVE_DATA_API_KEY is missing')
+        return None
+    try:
+        r=requests.get(
+            'https://api.twelvedata.com/time_series',
+            params={'symbol':'XAU/USD','interval':tf,'outputsize':min(n,5000),'timezone':'UTC','apikey':TWELVE},
+            timeout=(5,20)
+        )
+        if not r.ok:
+            print('Twelve Data HTTP error:',r.status_code)
+            return None
+        payload=r.json()
+        rows=payload.get('values') or []
+        out=[]
+        for z in rows:
+            try:
+                ts=int(datetime.datetime.strptime(z['datetime'],'%Y-%m-%d %H:%M:%S').replace(tzinfo=datetime.timezone.utc).timestamp())
+                out.append({'t':ts,'o':float(z['open']),'h':float(z['high']),'l':float(z['low']),'c':float(z['close'])})
+            except (KeyError,TypeError,ValueError):
+                continue
+        out.sort(key=lambda x:int(x['t'] or 0))
+        if not out:
+            print('Twelve Data:',payload.get('message') or payload.get('status') or 'empty response')
+            return None
+        print(f'DATA FALLBACK: Twelve Data {tf} rows={len(out)}')
+        return out
+    except Exception as e:
+        print('Twelve Data error:',type(e).__name__)
+        return None
+
 def fetch(sym,tf,n=200):
     global last_api_request,api_blocked_until
     k=f'{sym}:{tf}';now=time.time()
     if k in cache and now-cache[k][0]<TTL[tf]: return cache[k][1]
-    if now<api_blocked_until:return cache.get(k,(0,None))[1]
+    if now<api_blocked_until:
+        fallback=fetch_twelve(tf,n)
+        if fallback:cache[k]=(now,fallback)
+        return fallback or cache.get(k,(0,None))[1]
     try:
         if not KEY:
             print('AllTick: ALLTICK_API_TOKEN is missing')
@@ -124,8 +159,10 @@ def fetch(sym,tf,n=200):
         )
         if r.status_code==429:
             api_blocked_until=time.time()+API_BACKOFF
-            print('AllTick rate limit (429); backing off 5 minutes')
-            return cache.get(k,(0,None))[1]
+            print('AllTick rate limit (429); using Twelve Data fallback')
+            fallback=fetch_twelve(tf,n)
+            if fallback:cache[k]=(now,fallback)
+            return fallback or cache.get(k,(0,None))[1]
         if not r.ok:
             print('AllTick HTTP error:',r.status_code)
             return cache.get(k,(0,None))[1]
@@ -133,8 +170,10 @@ def fetch(sym,tf,n=200):
         provider_msg=str(payload.get('msg') or payload.get('message') or '').lower()
         if 'too many requests' in provider_msg or 'rate limit' in provider_msg:
             api_blocked_until=time.time()+API_BACKOFF
-            print('AllTick rate limit payload; backing off 5 minutes')
-            return cache.get(k,(0,None))[1]
+            print('AllTick rate limit payload; using Twelve Data fallback')
+            fallback=fetch_twelve(tf,n)
+            if fallback:cache[k]=(now,fallback)
+            return fallback or cache.get(k,(0,None))[1]
         rows=(payload.get('data') or {}).get('kline_list') or []
         out=[]
         for z in rows:
@@ -164,10 +203,17 @@ def fetch_live():
  # paper TP/SL tracking while respecting the provider's free-tier limits.
  global last_api_request,api_blocked_until
  now=time.time()
- if live_cache[1] is not None and now-live_cache[0]<60:
+ live_ttl=300 if now<api_blocked_until else 60
+ if live_cache[1] is not None and now-live_cache[0]<live_ttl:
   return live_cache[1]
  try:
-  if not KEY or now<api_blocked_until:return live_cache[1]
+  if now<api_blocked_until:
+   rows=fetch_twelve('5min',2)
+   if rows:
+    live_cache[:]=[now,rows[-1]]
+    return live_cache[1]
+   return live_cache[1]
+  if not KEY:return live_cache[1]
   query={'trace':str(uuid.uuid4()),'data':{'code':'GOLD','kline_type':KLINE_TYPE['5min'],'kline_timestamp_end':0,'query_kline_num':2,'adjust_type':0}}
   wait_for=MIN_API_GAP-(time.time()-last_api_request)
   if wait_for>0:time.sleep(wait_for)
@@ -175,13 +221,17 @@ def fetch_live():
   r=requests.get(URL,params={'token':KEY,'query':json.dumps(query,separators=(',',':'))},timeout=(5,20))
   if r.status_code==429:
    api_blocked_until=time.time()+API_BACKOFF
-   print('AllTick live rate limit (429); backing off 5 minutes')
+   print('AllTick live rate limit (429); using Twelve Data fallback')
+   rows=fetch_twelve('5min',2)
+   if rows:live_cache[:]=[now,rows[-1]]
    return live_cache[1]
   if not r.ok:return live_cache[1]
   payload=r.json();provider_msg=str(payload.get('msg') or payload.get('message') or '').lower()
   if 'too many requests' in provider_msg or 'rate limit' in provider_msg:
    api_blocked_until=time.time()+API_BACKOFF
-   print('AllTick live rate limit payload; backing off 5 minutes')
+   print('AllTick live rate limit payload; using Twelve Data fallback')
+   rows=fetch_twelve('5min',2)
+   if rows:live_cache[:]=[now,rows[-1]]
    return live_cache[1]
   rows=(payload.get('data') or {}).get('kline_list') or []
   if not rows:return live_cache[1]
