@@ -432,11 +432,12 @@ def analyze():
  total=max(buy+sell,1);bp=round(100*buy/total);sp=100-bp;side='BUY' if bp>=65 and buy>=sell+W('price_action') else 'SELL' if sp>=65 and sell>=buy+W('price_action') else 'WAIT'
  ranges=[x['h']-x['l'] for x in s5['c'][-15:-1]]
  lastbar=s5['c'][-1];prevbar=s5['c'][-2]
- # Technical signals must agree with both higher timeframes.
- if side=='BUY' and not (t15=='UP' and t1=='UP'):
-  side='WAIT';why.append('منع BUY: اتجاه 15m و1h غير صاعد معًا')
- elif side=='SELL' and not (t15=='DOWN' and t1=='DOWN'):
-  side='WAIT';why.append('منع SELL: اتجاه 15m و1h غير هابط معًا')
+ # Strategic v2 gate: enter only when all three trading timeframes agree.
+ # This is the single post-loss strategy change; scoring and SL/TP stay unchanged.
+ if side=='BUY' and not (t5=='UP' and t15=='UP' and t1=='UP'):
+  side='WAIT';why.append('منع BUY: اتجاه 5m و15m و1h غير صاعد معًا')
+ elif side=='SELL' and not (t5=='DOWN' and t15=='DOWN' and t1=='DOWN'):
+  side='WAIT';why.append('منع SELL: اتجاه 5m و15m و1h غير هابط معًا')
  news_pause=max(0,NEWS_BLOCK_MINUTES*60-(time.time()-float(news_seen.get('last_sent',0))))
  if news_pause>0:
   side='WAIT';why.append(f'حماية خبر قوي: متبقي {int(news_pause//60)+1} دقائق')
