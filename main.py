@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 TOKEN=os.getenv("TELEGRAM_BOT_TOKEN");CHAT=os.getenv("TELEGRAM_CHAT_ID");REPORT=900
 PAPER_MODE=os.getenv("CRYPTO_PAPER_MODE","true").strip().lower() not in ("0","false","off","no")
 STARTED_AT=time.time()
+STARTUP_BLOCK_SECONDS=float(os.getenv("PAPER_STARTUP_BLOCK_SECONDS","21600"))
 def env_float(name,default):
     try:return float(os.getenv(name,str(default)))
     except (TypeError,ValueError):return float(default)
@@ -191,8 +192,9 @@ def paper_track(symbol,x):
     send(f'🧪 نتيجة صفقة تجريبية — {symbol} — لا تدخل بأموال حقيقية\n🎯 النتيجة: {result}\n📍 Entry: {q["entry"]:.6f}\n🚪 Exit: {exit_price:.6f}\n📊 الحركة: {delta:.6f}'+financial)
     del paper[symbol]
 def paper_open(symbol,x,message):
-    if time.time()-STARTED_AT<900:
-        print(f"SIGNAL BLOCKED {symbol}: 15-minute startup safety window")
+    if time.time()-STARTED_AT<STARTUP_BLOCK_SECONDS:
+        remaining=max(0,int(STARTUP_BLOCK_SECONDS-(time.time()-STARTED_AT)))
+        print(f"SIGNAL BLOCKED {symbol}: startup duplicate-protection window remaining={remaining}s")
         return False
     if not PAPER_MODE or not x or x["side"] not in ("LONG","SHORT") or symbol in paper:return False
     q={"side":x["side"],"entry":x["p"],"sl":x["sl"],"tp":x["tp"],"opened_at":time.time(),"opened_bar":int(x["c"][-1][0]),"last_bar":0}
