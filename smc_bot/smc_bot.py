@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import signal
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -23,7 +24,11 @@ BINANCE_ENDPOINTS = (
     "https://data-api.binance.vision/api/v3/klines",
 )
 
-logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"), format="%(asctime)s %(levelname)s %(message)s")
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO"),
+    format="%(asctime)s %(levelname)s %(message)s",
+    stream=sys.stdout,
+)
 log = logging.getLogger("smc-bot")
 running = True
 
@@ -140,6 +145,7 @@ def setup_to_trade(setup: Setup) -> dict[str, Any]:
 
 
 def scan_once(state: dict[str, Any]) -> None:
+    completed = 0
     for symbol in SYMBOLS:
         try:
             price = current_price(symbol)
@@ -164,6 +170,9 @@ def scan_once(state: dict[str, Any]) -> None:
             save_state(state)
         except Exception:
             log.exception("Scan failed for %s", symbol)
+        else:
+            completed += 1
+    log.info("SMC scan cycle complete: %s/%s symbols", completed, len(SYMBOLS))
 
 
 def main() -> None:
@@ -185,4 +194,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
