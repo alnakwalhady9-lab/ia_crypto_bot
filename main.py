@@ -1,8 +1,19 @@
-import os,time,re,xml.etree.ElementTree as ET,requests
+import os,time,re,math,xml.etree.ElementTree as ET,requests
 from requests.adapters import HTTPAdapter
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 TOKEN=os.getenv("TELEGRAM_BOT_TOKEN");CHAT=os.getenv("TELEGRAM_CHAT_ID");REPORT=900
 PAPER_MODE=os.getenv("CRYPTO_PAPER_MODE","true").strip().lower() not in ("0","false","off","no")
+def env_float(name,default):
+    try:return float(os.getenv(name,str(default)))
+    except (TypeError,ValueError):return float(default)
+# BTC paper-account risk model. Contract default: 1.0 lot = 1 BTC.
+BTC_ACCOUNT_BALANCE=env_float("BTC_ACCOUNT_BALANCE",5000)
+BTC_RISK_PCT=env_float("BTC_RISK_PCT",1.0)
+BTC_SPREAD_USD=env_float("BTC_SPREAD_USD",30.0)
+BTC_CONTRACT_BTC_PER_LOT=env_float("BTC_CONTRACT_BTC_PER_LOT",1.0)
+BTC_LOT_STEP=env_float("BTC_LOT_STEP",0.01)
+BTC_MIN_LOT=env_float("BTC_MIN_LOT",0.01)
+BTC_MAX_LOT=env_float("BTC_MAX_LOT",1.0)
 SESSION=requests.Session();_adapter=HTTPAdapter(pool_connections=10,pool_maxsize=10);SESSION.mount("https://",_adapter);SESSION.mount("http://",_adapter)
 EXECUTOR=ThreadPoolExecutor(max_workers=3)
 def run_with_timeout(fn,timeout,name):
@@ -112,7 +123,21 @@ def analyze():
     total=max(buy+sell,1);bp=round(100*buy/total);sp=100-bp;side="LONG" if bp>=65 and buy>=sell+15 else "SHORT" if sp>=65 and sell>=buy+15 else "WAIT"
     if side=="LONG" and res-p<1.10*a:side="WAIT";why.append("مقاومة قريبة — منع مطاردة السعر")
     if side=="SHORT" and p-sup<1.10*a:side="WAIT";why.append("دعم قريب — منع مطاردة السعر")
-    risk=max(a*1.4,p*.0025);sl=p-risk if side=="LONG" else p+risk if side=="SHORT" else None;tp=p+risk*2 if side=="LONG" else p-risk*2 if side=="SHORT" else None
+    risk=max(a*1.4,p*.0025)
+    sl=p-risk if side=="LONG" else p+risk if side=="SHORT" else None
+    tp=p+risk*2 if side=="LONG" else p-risk*2 if side=="SHORT" else None
+    lot_size=0.0;dollar_risk=0.0;dollar_reward=0.0;risk_budget=BTC_ACCOUNT_BALANCE*BTC_RISK_PCT/100
+    if side in ("LONG","SHORT"):
+        # Size from the actual stop distance plus a conservative BTC spread.
+        loss_per_lot=(abs(p-sl)+BTC_SPREAD_USD)*BTC_CONTRACT_BTC_PER_LOT
+        raw_lot=risk_budget/loss_per_lot if loss_per_lot>0 else 0.0
+        lot_size=math.floor(raw_lot/BTC_LOT_STEP+1e-12)*BTC_LOT_STEP if BTC_LOT_STEP>0 else 0.0
+        lot_size=min(lot_size,BTC_MAX_LOT)
+        if lot_size<BTC_MIN_LOT:
+            side="WAIT";lot_size=0.0;why.append("حجم العقد الأدنى يتجاوز حد المخاطرة — لا دخول")
+        else:
+            dollar_risk=lot_size*loss_per_lot
+            dollar_reward=lot_size*max(abs(tp-p)-BTC_SPREAD_USD,0)*BTC_CONTRACT_BTC_PER_LOT
     return locals()
 def scalp_analysis(c5,c15,forex=False):
     s5=snap(c5);s15=snap(c15)
@@ -156,18 +181,25 @@ def paper_track(symbol,x):
     target=hi>=q["tp"] if q["side"]=="LONG" else lo<=q["tp"]
     if not (stop or target):return
     result="SL_AMBIGUOUS" if stop and target else "TP" if target else "SL";exit_price=q["sl"] if stop else q["tp"];delta=(exit_price-q["entry"]) if q["side"]=="LONG" else (q["entry"]-exit_price)
-    print(f'PAPER CLOSE {symbol} {result} entry={q["entry"]:.6f} exit={exit_price:.6f} delta={delta:.6f}')
-    send(f'🧪 نتيجة صفقة تجريبية — {symbol} — لا تدخل بأموال حقيقية\n🎯 النتيجة: {result}\n📍 Entry: {q["entry"]:.6f}\n🚪 Exit: {exit_price:.6f}\n📊 الحركة: {delta:.6f}')
+    financial=""
+    if symbol=="BTC/USD":
+        quantity=q.get("lot_size",0.0)*BTC_CONTRACT_BTC_PER_LOT
+        net_pnl=(delta-BTC_SPREAD_USD)*quantity
+        financial=f'\n📦 الحجم: {q.get("lot_size",0.0):.2f} lot\n💵 الصافي بعد السبريد: ${net_pnl:+.2f}'
+    print(f'PAPER CLOSE {symbol} {result} entry={q["entry"]:.6f} exit={exit_price:.6f} delta={delta:.6f}{financial}')
+    send(f'🧪 نتيجة صفقة تجريبية — {symbol} — لا تدخل بأموال حقيقية\n🎯 النتيجة: {result}\n📍 Entry: {q["entry"]:.6f}\n🚪 Exit: {exit_price:.6f}\n📊 الحركة: {delta:.6f}'+financial)
     del paper[symbol]
 def paper_open(symbol,x,message):
     if not PAPER_MODE or not x or x["side"] not in ("LONG","SHORT") or symbol in paper:return False
-    q={"side":x["side"],"entry":x["p"],"sl":x["sl"],"tp":x["tp"],"opened_at":time.time(),"opened_bar":int(x["c"][-1][0]),"last_bar":0};paper[symbol]=q
+    q={"side":x["side"],"entry":x["p"],"sl":x["sl"],"tp":x["tp"],"opened_at":time.time(),"opened_bar":int(x["c"][-1][0]),"last_bar":0}
+    if symbol=="BTC/USD":q.update({"lot_size":x.get("lot_size",0.0),"planned_risk":x.get("dollar_risk",0.0),"planned_reward":x.get("dollar_reward",0.0)})
+    paper[symbol]=q
     print(f'PAPER OPEN {symbol} {q["side"]} entry={q["entry"]:.6f} sl={q["sl"]:.6f} tp={q["tp"]:.6f}')
     send("🧪 صفقة تجريبية — لا تدخل بأموال حقيقية\n\n"+message);return True
 
 def ar(x):return {"LONG":"🟢 شراء","SHORT":"🔴 بيع","WAIT":"🟡 انتظار","UP":"صاعد","DOWN":"هابط","MIXED":"مختلط","RANGE":"عرضي","POSITIVE":"إيجابي","NEGATIVE":"سلبي","NEUTRAL":"محايد"}.get(x,x)
 def msg(x):
-    risk="لا دخول مؤكد" if x["side"]=="WAIT" else f'🛑 SL: ${x["sl"]:.2f}\n🎯 TP: ${x["tp"]:.2f}'
+    risk="لا دخول مؤكد" if x["side"]=="WAIT" else f'🛑 SL: ${x["sl"]:.2f}\n🎯 TP: ${x["tp"]:.2f}\n📦 الحجم المحسوب: {x["lot_size"]:.2f} lot\n💵 مخاطرة الصفقة: ${x["dollar_risk"]:.2f} من ${BTC_ACCOUNT_BALANCE:.2f} ({BTC_RISK_PCT:.2f}%)\n💰 العائد المتوقع بعد السبريد: ${x["dollar_reward"]:.2f}'
     return f'₿ BTC ANALYST PRO\n\n🎯 القرار: {ar(x["side"])}\n💰 ${x["p"]:.2f}\n🟢 ميل الشراء: {x["bp"]}% | 🔴 ميل البيع: {x["sp"]}%\n📐 الهيكل 15m: {ar(x["st"])}\n⏱ 15m/1h/4h: {ar(x["t15"])} / {ar(x["t1"])} / {ar(x["t4"])}\n💧 Liquidity: {"Sweep BUY" if x["lb"] else "Sweep SELL" if x["ls"] else "لا Sweep مؤكد"}\n📈 RSI: {x["r"]:.1f} | ATR: {x["a"]:.2f}\n🟢 دعم: ${x["sup"]:.0f} | 🔴 مقاومة: ${x["res"]:.0f}\n📰 أخبار: {ar(x["n"])} | Reddit: {ar(x["rd"])} — معلومات فقط\n{risk}\n🧠 {"؛ ".join(x["why"][:5]) if x["why"] else "توافق محدود"}\n\n⚠️ إشارة تحليلية فقط.'
 def scalp_msg(x,name,price_digits=3):
     f=lambda v:f'{v:.{price_digits}f}';risk="لا دخول مؤكد" if x["side"]=="WAIT" else f'🛑 SL: {f(x["sl"])}\n🎯 TP: {f(x["tp"])}'
