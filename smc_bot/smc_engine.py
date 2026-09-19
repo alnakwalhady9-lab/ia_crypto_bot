@@ -148,7 +148,8 @@ def _find_fvg_after(candles: list[Candle], start_index: int, direction: str) -> 
 
 
 def _touches_fvg(candle: Candle, fvg: FVG) -> bool:
-    return candle.low <= fvg.high and candle.high >= fvg.low
+    # Paper entry is the FVG midpoint; require an actual midpoint fill.
+    return candle.low <= fvg.midpoint <= candle.high
 
 
 def build_setup(symbol: str, h1: list[Candle], m15: list[Candle], m5: list[Candle]) -> Optional[Setup]:
@@ -204,4 +205,3 @@ def build_setup(symbol: str, h1: list[Candle], m15: list[Candle], m5: list[Candl
         tp3=tp3,
         detected_at=m5[-1].close_time,
     )
-
