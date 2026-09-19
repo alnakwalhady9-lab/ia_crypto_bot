@@ -154,20 +154,18 @@ def scan_once(state: dict[str, Any]) -> None:
                 if monitor_trade(symbol, active, price):
                     state["active"].pop(symbol, None)
                 save_state(state)
-                continue
-
-            setup = build_setup(
-                symbol,
-                fetch_candles(symbol, "1h"),
-                fetch_candles(symbol, "15m"),
-                fetch_candles(symbol, "5m"),
-            )
-            if not setup or state["last_signal"].get(symbol) == setup.detected_at:
-                continue
-            send_telegram(setup_message(setup))
-            state["active"][symbol] = setup_to_trade(setup)
-            state["last_signal"][symbol] = setup.detected_at
-            save_state(state)
+            else:
+                setup = build_setup(
+                    symbol,
+                    fetch_candles(symbol, "1h"),
+                    fetch_candles(symbol, "15m"),
+                    fetch_candles(symbol, "5m"),
+                )
+                if setup and state["last_signal"].get(symbol) != setup.detected_at:
+                    send_telegram(setup_message(setup))
+                    state["active"][symbol] = setup_to_trade(setup)
+                    state["last_signal"][symbol] = setup.detected_at
+                    save_state(state)
         except Exception:
             log.exception("Scan failed for %s", symbol)
         else:
