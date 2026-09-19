@@ -3,6 +3,7 @@ from requests.adapters import HTTPAdapter
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 TOKEN=os.getenv("TELEGRAM_BOT_TOKEN");CHAT=os.getenv("TELEGRAM_CHAT_ID");REPORT=900
 PAPER_MODE=os.getenv("CRYPTO_PAPER_MODE","true").strip().lower() not in ("0","false","off","no")
+STARTED_AT=time.time()
 def env_float(name,default):
     try:return float(os.getenv(name,str(default)))
     except (TypeError,ValueError):return float(default)
@@ -190,6 +191,9 @@ def paper_track(symbol,x):
     send(f'🧪 نتيجة صفقة تجريبية — {symbol} — لا تدخل بأموال حقيقية\n🎯 النتيجة: {result}\n📍 Entry: {q["entry"]:.6f}\n🚪 Exit: {exit_price:.6f}\n📊 الحركة: {delta:.6f}'+financial)
     del paper[symbol]
 def paper_open(symbol,x,message):
+    if time.time()-STARTED_AT<900:
+        print(f"SIGNAL BLOCKED {symbol}: 15-minute startup safety window")
+        return False
     if not PAPER_MODE or not x or x["side"] not in ("LONG","SHORT") or symbol in paper:return False
     q={"side":x["side"],"entry":x["p"],"sl":x["sl"],"tp":x["tp"],"opened_at":time.time(),"opened_bar":int(x["c"][-1][0]),"last_bar":0}
     if symbol=="BTC/USD":q.update({"lot_size":x.get("lot_size",0.0),"planned_risk":x.get("dollar_risk",0.0),"planned_reward":x.get("dollar_reward",0.0)})
@@ -215,21 +219,24 @@ while True:
     if x:
         print(f'BTC {x["p"]:.2f} {x["side"]} BUY={x["bp"]}% SELL={x["sp"]}%');periodic=last_report==0 or now-last_report>=REPORT;immediate=x["side"] in ("LONG","SHORT") and x["side"]!=last
         if PAPER_MODE:
-            paper_track("BTC/USD",x);paper_open("BTC/USD",x,msg(x))
+            paper_track("BTC/USD",x);
+            if immediate:paper_open("BTC/USD",x,msg(x))
         elif periodic or immediate:send(msg(x))
         if periodic:last_report=now
         last=x["side"]
     if e:
         print(f'EURUSD {e["p"]:.5f} {e["side"]} BUY={e["bp"]}% SELL={e["sp"]}%');periodic=last_eur_report==0 or now-last_eur_report>=REPORT;immediate=e["side"] in ("LONG","SHORT") and e["side"]!=last_eur
         if PAPER_MODE:
-            paper_track("EUR/USD",e);paper_open("EUR/USD",e,scalp_msg(e,"💶 EUR/USD SCALP MONITOR",5))
+            paper_track("EUR/USD",e);
+            if immediate:paper_open("EUR/USD",e,scalp_msg(e,"💶 EUR/USD SCALP MONITOR",5))
         elif periodic or immediate:send(scalp_msg(e,"💶 EUR/USD SCALP MONITOR",5))
         if periodic:last_eur_report=now
         last_eur=e["side"]
     if j:
         print(f'USDJPY {j["p"]:.3f} {j["side"]} BUY={j["bp"]}% SELL={j["sp"]}%');periodic=last_jpy_report==0 or now-last_jpy_report>=REPORT;immediate=j["side"] in ("LONG","SHORT") and j["side"]!=last_jpy
         if PAPER_MODE:
-            paper_track("USD/JPY",j);paper_open("USD/JPY",j,scalp_msg(j,"💴 USD/JPY SCALP MONITOR",3))
+            paper_track("USD/JPY",j);
+            if immediate:paper_open("USD/JPY",j,scalp_msg(j,"💴 USD/JPY SCALP MONITOR",3))
         elif periodic or immediate:send(scalp_msg(j,"💴 USD/JPY SCALP MONITOR",3))
         if periodic:last_jpy_report=now
         last_jpy=j["side"]
