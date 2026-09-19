@@ -174,6 +174,23 @@ def analyze_eur():return scalp_analysis(eur_candles("5m",120),eur_candles("15m",
 def analyze_jpy():return scalp_analysis(jpy_candles("5m",120),jpy_candles("15m",120),True)
 
 paper={}
+def restore_paper(symbol,env_name):
+    raw=os.getenv(env_name,"").strip()
+    if not raw:return
+    try:
+        parts=[p.strip() for p in raw.split(",")]
+        side=parts[0].upper();entry=float(parts[1]);sl=float(parts[2]);tp=float(parts[3])
+        if side not in ("LONG","SHORT"):raise ValueError("invalid side")
+        q={"side":side,"entry":entry,"sl":sl,"tp":tp,"opened_at":time.time(),"opened_bar":0,"last_bar":0,"restored":True}
+        if symbol=="BTC/USD":
+            lot=float(parts[4]) if len(parts)>4 else 0.0
+            q.update({"lot_size":lot,"planned_risk":0.0,"planned_reward":0.0})
+        paper[symbol]=q
+        print(f'PAPER RESTORED {symbol} {side} entry={entry:.6f} sl={sl:.6f} tp={tp:.6f}')
+    except Exception as e:print(f"PAPER RESTORE ERROR {symbol}",e)
+restore_paper("BTC/USD","PAPER_RESTORE_BTCUSD")
+restore_paper("EUR/USD","PAPER_RESTORE_EURUSD")
+restore_paper("USD/JPY","PAPER_RESTORE_USDJPY")
 def paper_track(symbol,x):
     if not PAPER_MODE or symbol not in paper or not x:return
     q=paper[symbol];bar=int(x["c"][-1][0])
