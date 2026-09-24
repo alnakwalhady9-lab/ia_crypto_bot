@@ -164,8 +164,11 @@ def fetch(sym,tf,n=200):
             if fallback:cache[k]=(now,fallback)
             return fallback or cache.get(k,(0,None))[1]
         if not r.ok:
-            print('AllTick HTTP error:',r.status_code)
-            return cache.get(k,(0,None))[1]
+            api_blocked_until=time.time()+API_BACKOFF
+            print('AllTick HTTP error:',r.status_code,'; using Twelve Data fallback')
+            fallback=fetch_twelve(tf,n)
+            if fallback:cache[k]=(now,fallback)
+            return fallback or cache.get(k,(0,None))[1]
         payload=r.json()
         provider_msg=str(payload.get('msg') or payload.get('message') or '').lower()
         if 'too many requests' in provider_msg or 'rate limit' in provider_msg:
@@ -225,7 +228,12 @@ def fetch_live():
    rows=fetch_twelve('5min',2)
    if rows:live_cache[:]=[now,rows[-1]]
    return live_cache[1]
-  if not r.ok:return live_cache[1]
+  if not r.ok:
+   api_blocked_until=time.time()+API_BACKOFF
+   print('AllTick live HTTP error:',r.status_code,'; using Twelve Data fallback')
+   rows=fetch_twelve('5min',2)
+   if rows:live_cache[:]=[now,rows[-1]]
+   return live_cache[1]
   payload=r.json();provider_msg=str(payload.get('msg') or payload.get('message') or '').lower()
   if 'too many requests' in provider_msg or 'rate limit' in provider_msg:
    api_blocked_until=time.time()+API_BACKOFF
