@@ -438,6 +438,14 @@ def analyze():
   side='WAIT';why.append('منع BUY: اتجاه 5m و15m و1h غير صاعد معًا')
  elif side=='SELL' and not (t5=='DOWN' and t15=='DOWN' and t1=='DOWN'):
   side='WAIT';why.append('منع SELL: اتجاه 5m و15m و1h غير هابط معًا')
+ # Strategic v3 exhaustion gate: avoid chasing an already-extended move.
+ # This is the only strategy change after the documented seven-loss streak.
+ if side=='SELL' and s5['r']<35:
+  print(f'SIGNAL BLOCKED: RSI exhaustion side=SELL RSI={s5["r"]:.1f}')
+  side='WAIT';why.append('منع SELL: RSI 5m في تشبع بيع')
+ elif side=='BUY' and s5['r']>65:
+  print(f'SIGNAL BLOCKED: RSI exhaustion side=BUY RSI={s5["r"]:.1f}')
+  side='WAIT';why.append('منع BUY: RSI 5m في تشبع شراء')
  news_pause=max(0,NEWS_BLOCK_MINUTES*60-(time.time()-float(news_seen.get('last_sent',0))))
  if news_pause>0:
   side='WAIT';why.append(f'حماية خبر قوي: متبقي {int(news_pause//60)+1} دقائق')
