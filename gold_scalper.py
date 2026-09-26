@@ -1,4 +1,5 @@
 import os,time,json,secrets,requests,uuid,re,datetime,xml.etree.ElementTree as ET
+from zoneinfo import ZoneInfo
 from urllib.parse import quote_plus
 TOKEN=os.getenv('GOLD_TELEGRAM_BOT_TOKEN');CHAT=os.getenv('GOLD_TELEGRAM_CHAT_ID');KEY=os.getenv('ALLTICK_API_TOKEN');TWELVE=os.getenv('TWELVE_DATA_API_KEY');INVITE=os.getenv('GOLD_INVITE_CODE')
 # Safety default: paper-test every signal and never broadcast entries until explicitly approved.
@@ -275,6 +276,12 @@ def candle_is_fresh(s,tf):
   # three and a half intervals, but never reuse an indefinitely stale feed.
   return 0<=time.time()-ts<=TTL[tf]*3.5
  except:return False
+def gold_market_is_open():
+ # XAU/USD weekend session: Friday 17:00 ET through Sunday 18:00 ET is closed.
+ # Use New York time so daylight-saving changes are handled correctly.
+ now=datetime.datetime.now(datetime.timezone.utc).astimezone(ZoneInfo('America/New_York'))
+ wd=now.weekday()
+ return not (wd==5 or (wd==4 and now.hour>=17) or (wd==6 and now.hour<18))
 def trend(s):
  if s['p']>s['e9']>s['e20']>s['e50']:return 'UP'
  if s['p']<s['e9']<s['e20']<s['e50']:return 'DOWN'
@@ -482,6 +489,9 @@ def stats_text():
  h=state['history'];n=len(h);w=sum(x.get('max_tp',0)>=1 for x in h);t3=sum(x.get('max_tp',0)>=3 for x in h)
  return f'📊 سجل التعلم: {n} مغلقة | TP1+ {w} ({w/n*100:.1f}%) | TP3 {t3}' if n else '📊 سجل التعلم: لا توجد نتائج مغلقة بعد'
 def open_signal(x,live=None):
+ if not gold_market_is_open():
+  print('SIGNAL BLOCKED: XAU weekend market closed')
+  return False
  if time.time()-STARTED_AT<900:
   print('SIGNAL BLOCKED: 15-minute startup safety window')
   return False
