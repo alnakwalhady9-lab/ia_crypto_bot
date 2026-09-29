@@ -384,7 +384,9 @@ def load_state():
  try:
   with open(STATE_FILE) as f:s=json.load(f)
   for k in BASE:s.setdefault('weights',{}).setdefault(k,1.0)
-  s.setdefault('history',[]);s.setdefault('active',[]);s.setdefault('next_id',1);s.setdefault('last_learn_count',0);s.setdefault('last_open_bar',None);s.setdefault('last_closed_at',0);return s
+  s.setdefault('history',[]);s.setdefault('active',[]);s.setdefault('next_id',1);s.setdefault('last_learn_count',0);s.setdefault('last_open_bar',None);s.setdefault('last_closed_at',0)
+  for sig in s['active']:sig.setdefault('breakeven_active',False)
+  return s
  except:return default_state()
 def save_state():
  try:
@@ -477,7 +479,8 @@ def gold_pips(entry,target):return int(round(abs(target-entry)*100))
 def msg(x):
  if state['active']:
   sig=state['active'][0];e=sig['entry'];t=sig['tps']
-  risk=f'📌 صفقة #{sig["id"]} مفتوحة: {ar(sig["side"])}\n📍 Entry: {e:.2f}\n🛑 SL: {sig["sl"]:.2f}\n🎯 TP1: {t[0]:.2f} (+{gold_pips(e,t[0])} pips)\n🎯 TP2: {t[1]:.2f} (+{gold_pips(e,t[1])} pips)\n🎯 TP3: {t[2]:.2f} (+{gold_pips(e,t[2])} pips)'
+  protected_sl=e if sig.get('breakeven_active') else sig['sl'];protection=' (Breakeven بعد TP1)' if sig.get('breakeven_active') else ''
+  risk=f'📌 صفقة #{sig["id"]} مفتوحة: {ar(sig["side"])}\n📍 Entry: {e:.2f}\n🛑 SL: {protected_sl:.2f}{protection}\n🎯 TP1: {t[0]:.2f} (+{gold_pips(e,t[0])} pips)\n🎯 TP2: {t[1]:.2f} (+{gold_pips(e,t[1])} pips)\n🎯 TP3: {t[2]:.2f} (+{gold_pips(e,t[2])} pips)'
   status='✅ الصفقة مسجلة وتحت المتابعة — لن تُفتح إشارة أخرى قبل TP3 أو SL.'
  else:
   risk='لا دخول مؤكد حاليًا' if x['side']=='WAIT' else f'📍 Entry محتمل: {x["p"]:.2f}\n🛑 SL: {x["sl"]:.2f}\n🎯 TP1: {x["tp1"]:.2f} (+{gold_pips(x["p"],x["tp1"])} pips)\n🎯 TP2: {x["tp2"]:.2f} (+{gold_pips(x["p"],x["tp2"])} pips)\n🎯 TP3: {x["tp3"]:.2f} (+{gold_pips(x["p"],x["tp3"])} pips)'
@@ -514,7 +517,7 @@ def open_signal(x,live=None):
  sl_dist=abs(float(x['p'])-float(x['sl']));tp_dist=[abs(float(t)-float(x['p'])) for t in (x['tp1'],x['tp2'],x['tp3'])]
  sl=entry-sl_dist if x['side']=='BUY' else entry+sl_dist
  tps=[entry+d for d in tp_dist] if x['side']=='BUY' else [entry-d for d in tp_dist]
- sig={'id':state['next_id'],'side':x['side'],'entry':entry,'sl':sl,'tps':tps,'hit':[False]*3,'max_tp':0,'features':x['features'],'buy_pct':x['bp'],'sell_pct':x['sp'],'opened_at':time.time(),'opened_bar':bar,'opened_live_t':str((live or {}).get('t',''))};state['next_id']+=1;state['last_open_bar']=bar;state['active'].append(sig);save_state();print(f'PAPER OPEN #{sig["id"]} {sig["side"]} entry={sig["entry"]:.2f} sl={sig["sl"]:.2f} tp1={sig["tps"][0]:.2f} tp2={sig["tps"][1]:.2f} tp3={sig["tps"][2]:.2f}');return True
+ sig={'id':state['next_id'],'side':x['side'],'entry':entry,'sl':sl,'tps':tps,'hit':[False]*3,'max_tp':0,'breakeven_active':False,'features':x['features'],'buy_pct':x['bp'],'sell_pct':x['sp'],'opened_at':time.time(),'opened_bar':bar,'opened_live_t':str((live or {}).get('t',''))};state['next_id']+=1;state['last_open_bar']=bar;state['active'].append(sig);save_state();print(f'PAPER OPEN #{sig["id"]} {sig["side"]} entry={sig["entry"]:.2f} sl={sig["sl"]:.2f} tp1={sig["tps"][0]:.2f} tp2={sig["tps"][1]:.2f} tp3={sig["tps"][2]:.2f}');return True
 def close_signal(sig,result,price):
  global last
  sig['result']=result;sig['exit_price']=price;sig['closed_at']=time.time();state['last_closed_at']=sig['closed_at'];state['history'].append(sig.copy());state['history']=state['history'][-500:];state['active'].remove(sig);last=None;save_state();learn()
@@ -528,17 +531,27 @@ def track_live(c):
    hi=lo=float(c['c'])
   else:
    hi=float(c['h']);lo=float(c['l'])
-  stop=lo<=sig['sl'] if sig['side']=='BUY' else hi>=sig['sl']
+  effective_sl=sig['entry'] if sig.get('breakeven_active') else sig['sl']
+  stop=lo<=effective_sl if sig['side']=='BUY' else hi>=effective_sl
   tp3=hi>=sig['tps'][2] if sig['side']=='BUY' else lo<=sig['tps'][2]
-  # If SL and TP3 are both inside the same 1m candle, ordering is unknown: record the conservative SL outcome.
+  # If protection and TP3 are both inside one candle, ordering is unknown: keep the conservative protected outcome.
   if stop and tp3:
-   close_signal(sig,'SL_AMBIGUOUS',sig['sl']);trade_send(f'❌ GOLD SIGNAL #{sig["id"]} — SL HIT (نفس شمعة TP/SL)\n{stats_text()}');continue
+   result='BE_AMBIGUOUS' if sig.get('breakeven_active') else 'SL_AMBIGUOUS'
+   label='BREAKEVEN' if sig.get('breakeven_active') else 'SL HIT'
+   close_signal(sig,result,effective_sl);trade_send(f'🟡 GOLD SIGNAL #{sig["id"]} — {label} (نفس شمعة TP/SL)\n{stats_text()}');continue
   touch=(lambda z:hi>=z) if sig['side']=='BUY' else (lambda z:lo<=z)
   for i,t in enumerate(sig['tps']):
    if not sig['hit'][i] and touch(t):
-    sig['hit'][i]=True;sig['max_tp']=max(sig['max_tp'],i+1);save_state();trade_send(f'✅ GOLD SIGNAL #{sig["id"]} — TP{i+1} HIT\n🎯 الهدف: {t:.2f}\n📈 المحقق: +{gold_pips(sig["entry"],t)} pips')
+    sig['hit'][i]=True;sig['max_tp']=max(sig['max_tp'],i+1)
+    if i==0 and not sig.get('breakeven_active'):
+     sig['breakeven_active']=True;sig['breakeven_at']=time.time()
+    save_state();extra='\n🔒 تم نقل SL إلى نقطة الدخول (Breakeven)' if i==0 else ''
+    trade_send(f'✅ GOLD SIGNAL #{sig["id"]} — TP{i+1} HIT\n🎯 الهدف: {t:.2f}\n📈 المحقق: +{gold_pips(sig["entry"],t)} pips{extra}')
   if sig['hit'][2]:close_signal(sig,'TP3',sig['tps'][2]);trade_send(f'🏁 GOLD SIGNAL #{sig["id"]} اكتملت — TP3\n{stats_text()}');continue
-  if stop:close_signal(sig,'SL_AFTER_TP'+str(sig['max_tp']) if sig['max_tp'] else 'SL',sig['sl']);trade_send(f'❌ GOLD SIGNAL #{sig["id"]} — SL HIT\n🎯 أعلى هدف: TP{sig["max_tp"]}\n{stats_text()}')
+  if stop:
+   if sig.get('breakeven_active'):
+    close_signal(sig,'BE_AFTER_TP'+str(sig['max_tp']),effective_sl);trade_send(f'🟡 GOLD SIGNAL #{sig["id"]} — BREAKEVEN\n🔒 الحماية بعد TP1 منعت خسارة SL كاملة\n🎯 أعلى هدف: TP{sig["max_tp"]}\n{stats_text()}')
+   else:close_signal(sig,'SL',effective_sl);trade_send(f'❌ GOLD SIGNAL #{sig["id"]} — SL HIT\n🎯 أعلى هدف: TP0\n{stats_text()}')
 state=load_state();print('Gold learning state:',STATE_FILE,'history=',len(state['history']),'active=',len(state['active']),'weights=',state['weights'])
 last=None;last_report=0;last_analysis=0
 while True:
