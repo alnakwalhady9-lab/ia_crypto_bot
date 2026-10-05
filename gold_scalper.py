@@ -532,7 +532,10 @@ def track_live(c):
   else:
    hi=float(c['h']);lo=float(c['l'])
   effective_sl=sig['entry'] if sig.get('breakeven_active') else sig['sl']
-  stop=lo<=effective_sl if sig['side']=='BUY' else hi>=effective_sl
+  # The candle that first proves TP1 may contain an earlier pre-TP1 low/high.
+  # Do not reuse that unordered OHLC range to trigger the newly activated breakeven stop.
+  protection_same_candle=sig.get('breakeven_active') and str(c.get('t',''))==str(sig.get('breakeven_bar',''))
+  stop=False if protection_same_candle else (lo<=effective_sl if sig['side']=='BUY' else hi>=effective_sl)
   tp3=hi>=sig['tps'][2] if sig['side']=='BUY' else lo<=sig['tps'][2]
   # If protection and TP3 are both inside one candle, ordering is unknown: keep the conservative protected outcome.
   if stop and tp3:
@@ -544,7 +547,7 @@ def track_live(c):
    if not sig['hit'][i] and touch(t):
     sig['hit'][i]=True;sig['max_tp']=max(sig['max_tp'],i+1)
     if i==0 and not sig.get('breakeven_active'):
-     sig['breakeven_active']=True;sig['breakeven_at']=time.time()
+     sig['breakeven_active']=True;sig['breakeven_at']=time.time();sig['breakeven_bar']=str(c.get('t',''))
     save_state();extra='\n🔒 تم نقل SL إلى نقطة الدخول (Breakeven)' if i==0 else ''
     trade_send(f'✅ GOLD SIGNAL #{sig["id"]} — TP{i+1} HIT\n🎯 الهدف: {t:.2f}\n📈 المحقق: +{gold_pips(sig["entry"],t)} pips{extra}')
   if sig['hit'][2]:close_signal(sig,'TP3',sig['tps'][2]);trade_send(f'🏁 GOLD SIGNAL #{sig["id"]} اكتملت — TP3\n{stats_text()}');continue
