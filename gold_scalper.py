@@ -4,6 +4,7 @@ from urllib.parse import quote_plus
 TOKEN=os.getenv('GOLD_TELEGRAM_BOT_TOKEN');CHAT=os.getenv('GOLD_TELEGRAM_CHAT_ID');KEY=os.getenv('ALLTICK_API_TOKEN');TWELVE=os.getenv('TWELVE_DATA_API_KEY');INVITE=os.getenv('GOLD_INVITE_CODE')
 # Safety default: paper-test every signal and never broadcast entries until explicitly approved.
 PAPER_MODE=os.getenv('GOLD_PAPER_MODE','true').strip().lower() not in ('0','false','off','no')
+BUY_ENTRIES_ENABLED=os.getenv('GOLD_BUY_ENTRIES_ENABLED','false').strip().lower() in ('1','true','on','yes')
 STARTED_AT=time.time()
 URL='https://quote.alltick.co/quote-b-api/kline';REPORT=900;cache={};TTL={'5min':300,'15min':900,'1h':3600}
 KLINE_TYPE={'5min':2,'15min':3,'1h':5}
@@ -463,6 +464,11 @@ def analyze():
  elif side=='BUY' and s5['r']>65:
   print(f'SIGNAL BLOCKED: RSI exhaustion side=BUY RSI={s5["r"]:.1f}')
   side='WAIT';why.append('منع BUY: RSI 5m في تشبع شراء')
+ # Strategic v4: the documented BUY cohort produced 10 SL and 1 BE with no final winner.
+ # Keep BUY analysis visible, but pause paper BUY entries until explicitly re-enabled.
+ if side=='BUY' and not BUY_ENTRIES_ENABLED:
+  print('SIGNAL BLOCKED: BUY entries paused after repeated documented BUY losses')
+  side='WAIT';why.append('منع BUY مؤقتًا: عينة BUY السابقة سلبية')
  news_pause=max(0,NEWS_BLOCK_MINUTES*60-(time.time()-float(news_seen.get('last_sent',0))))
  if news_pause>0:
   side='WAIT';why.append(f'حماية خبر قوي: متبقي {int(news_pause//60)+1} دقائق')
