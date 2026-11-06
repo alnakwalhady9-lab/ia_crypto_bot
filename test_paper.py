@@ -9,6 +9,7 @@ class PaperTests(unittest.TestCase):
         self.tmp=tempfile.TemporaryDirectory()
         os.environ['PAPER_DB_PATH']=self.tmp.name+'/paper.sqlite3'
         import main
+        main.LEDGER.db.close()
         self.m=importlib.reload(main)
         self.m.send=lambda message:None
         self.x=dict(side='LONG',p=100,sl=90,tp=120,c=[[900,99,101,100,100,1]],
@@ -19,7 +20,7 @@ class PaperTests(unittest.TestCase):
     def test_restart_retains_open_and_close_without_resurrecting(self):
         self.assertTrue(self.m.paper_open('BTC/USD',self.x,'test'))
         from paper_ledger import Ledger
-        reopened=Ledger(os.environ['PAPER_DB_PATH'])
+        reopened=Ledger(self.m.phase_path)
         self.assertEqual(len(reopened.positions()),1)
         reopened.db.close()
         self.m.paper_track('BTC/USD',dict(self.x,c=self.x['c']+[[1800,99,121,100,120,1]]))
@@ -53,20 +54,42 @@ class PaperTests(unittest.TestCase):
         x=dict(self.x,dollar_risk=49)
         self.assertTrue(self.m.paper_open('BTC/USD',x,'test'))
         self.assertFalse(self.m.paper_open('ETH/USD',x,'test'))
-    def test_eth_feed_and_sizing_are_independent(self):
-        import time
-        start=int(time.time()//900)*900
-        def fake(g,n,product):
-            return [[start-(n-i-1)*g,1900+i,1902+i,1901+i,1901+i,10] for i in range(n)]
-        with patch.object(self.m,'candles',side_effect=fake) as feed, patch.object(self.m,'sentiment',return_value='NEUTRAL'), patch.object(self.m,'reddit',return_value='NEUTRAL'):
-            x=self.m.analyze('ETH-USD')
-            self.assertIsNotNone(x)
-            self.assertEqual(x['spread'],2)
-            self.assertTrue(all(call.args[2]=='ETH-USD' for call in feed.call_args_list))
+
+    def test_btc_risk_cap(self):
+        oversize = dict(self.x, dollar_risk=51)
+        self.assertFalse(self.m.paper_open('BTC/USD', oversize, 'test'))
+    def test_disabled_products_never_request_market_data(self):
+        with patch.object(self.m.SESSION, 'get') as get:
+            for product in ('EUR-USD', 'USD-JPY', 'ETH-USD'):
+                with self.assertRaises(ValueError):
+                    self.m.analyze(product)
+                with self.assertRaises(ValueError):
+                    self.m.candles(900, 100, product)
+            get.assert_not_called()
+        self.assertFalse(self.m.paper_open('ETH/USD', self.x, 'test'))
+
+    def test_live_or_unknown_mode_aborts_before_ledger(self):
+        import runpy
+        with patch('paper_ledger.Ledger') as ledger:
+            for mode in ('false', 'LIVE', '', 'typo'):
+                with patch.dict(os.environ, CRYPTO_PAPER_MODE=mode):
+                    with self.assertRaisesRegex(RuntimeError, 'Live trading is disabled'):
+                        runpy.run_module('main', run_name='paper_startup_test')
+            ledger.assert_not_called()
+
+    def test_new_phase_leaves_legacy_state_intact(self):
+        from paper_ledger import Ledger
+        legacy = Ledger(os.environ['PAPER_DB_PATH'])
+        legacy.save('BTC/USD', {'id': 'historical'}, opening=True)
+        self.assertTrue(self.m.paper_open('BTC/USD', self.x, 'test'))
+        self.assertEqual(self.m.paper['BTC/USD']['phase'], 'btc-only-paper-v1')
+        self.assertEqual(legacy.positions(), {'BTC/USD': {'id': 'historical'}})
+        legacy.db.close()
+
     def test_signal_dedup_survives_restart(self):
         from paper_ledger import Ledger
         self.assertTrue(self.m.LEDGER.observe_signal('BTC/USD','LONG',900))
-        reopened=Ledger(os.environ['PAPER_DB_PATH'])
+        reopened=Ledger(self.m.phase_path)
         self.assertFalse(reopened.observe_signal('BTC/USD','LONG',1800))
         self.assertTrue(reopened.observe_signal('BTC/USD','SHORT',1800))
         reopened.db.close()

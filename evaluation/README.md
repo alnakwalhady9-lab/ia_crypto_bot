@@ -1,3 +1,13 @@
+# Independent BTC paper evaluation
+
+The BTC worker only analyzes BTC-USD and records simulated BTC/USD positions. ETH, EUR/USD and USD/JPY are excluded. Retest each FX strategy separately before considering changes to the worker.
+
+The SQLite file is a sibling of the configured PAPER_DB_PATH with the suffix `.btc-only-v1`. Keep this directory on the persistent volume. New events use phase `btc-only-paper-v1`. Restarting resumes this phase. Earlier databases and the Issue #4 snapshot remain historical, including positions without a recorded exit. Compare phase results separately.
+
+CRYPTO_PAPER_MODE defaults to true. False or unknown values stop startup before the ledger opens. There is no live-order adapter. Any future live path requires a separately reviewed change and the owner's explicit approval.
+
+Run `python -m unittest discover -v` offline. The previous phase is documented below.
+
 # BTC history and BTC/ETH paper phase — 2026-10-19
 
 User instruction: disable EUR/USD and USD/JPY; preserve BTC records; add Ethereum.
@@ -12,7 +22,7 @@ Last explicitly reported BTC balance: $5,195.20 after 9 closed BTC trades. Apply
 
 The last historical BTC LONG (entry 86174.18) and JPY LONG had no closing record in issue #4. They remain unresolved historical positions. They are not silently closed or restored as new trades from stale environment variables. Railway's historical deployment ac18a0f1 was REMOVED on October 10; no live position state was available during this change.
 
-## New phase
+## Previous BTC/ETH phase
 
 Only BTC/USD and ETH/USD are fetched and permitted. EUR/USD and USD/JPY have no active analysis, restoration, opening or alert path. PAPER_MODE is enforced in code.
 
