@@ -12,7 +12,7 @@ Last explicitly reported BTC balance: $5,195.20 after 9 closed BTC trades. Apply
 
 The last historical BTC LONG (entry 86174.18) and JPY LONG had no closing record in issue #4. They remain unresolved historical positions. They are not silently closed or restored as new trades from stale environment variables. Railway's historical deployment ac18a0f1 was REMOVED on October 10; no live position state was available during this change.
 
-## New phase
+## Previous BTC/ETH phase
 
 Only BTC/USD and ETH/USD are fetched and permitted. EUR/USD and USD/JPY have no active analysis, restoration, opening or alert path. PAPER_MODE is enforced in code.
 
@@ -27,3 +27,22 @@ The simulation assumes entry at the completed signal candle close and exits at t
 ## Checks
 
 Run `python -m unittest discover -s . -p 'test_*.py' -v` from repository root. Tests cover persistence across restart, historical-bar exclusion, unseen-bar replay, gap quarantine, ambiguous exits, combined risk limits, disabled forex, ETH feed selection and persistent signal deduplication.
+
+## BTC-only follow-up to issue #4
+
+Run `main.py` with `CRYPTO_PAPER_MODE=true` and the existing persistent
+ledger. A missing mode defaults to PAPER. False or unrecognized values
+stop startup before the ledger or network clients are initialized.
+There is no runtime switch to live trading.
+
+Only BTC is scanned or opened. The BTC entry logic and risk settings are
+retained. New positions carry `btc-only-paper-v1`; filter CLOSE events
+by this phase and symbol for the independent sample. A BTC position
+carried over from the previous phase closes under its original label.
+Open positions for paused symbols stay in SQLite, unmonitored pending
+separate reconciliation. Do not count them as closed trades.
+
+Retest EUR/USD and USD/JPY separately with the historical entry logic,
+a separate paper ledger per pair and spread assumptions for that pair.
+Keep both out of this runner. Compare net R, expectancy, loss streak and
+drawdown per pair against the issue #4 baseline before proposing changes.

@@ -65,4 +65,4 @@ def new_position(x):
                 last_bar=int(x['c'][-1][0]), lot_size=x['lot_size'],
                 planned_risk=x['dollar_risk'], spread=x['spread'], contract=x['contract'],
                 code_version=os.getenv('RAILWAY_GIT_COMMIT_SHA','local'),
-                reason=x['why'], buy_score=x['bp'], sell_score=x['sp'], phase='btc-eth-paper-v1')
+                reason=x['why'], buy_score=x['bp'], sell_score=x['sp'], phase='btc-only-paper-v1')

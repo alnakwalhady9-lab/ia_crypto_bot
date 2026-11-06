@@ -3,7 +3,8 @@ from requests.adapters import HTTPAdapter
 from paper_ledger import Ledger, new_position
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 TOKEN=os.getenv("TELEGRAM_BOT_TOKEN");CHAT=os.getenv("TELEGRAM_CHAT_ID");REPORT=900
-PAPER_MODE=os.getenv("CRYPTO_PAPER_MODE","true").strip().lower() not in ("0","false","off","no")
+if os.getenv("CRYPTO_PAPER_MODE", "true").strip().lower() not in {"true", "1", "yes", "on"}:
+    raise RuntimeError("BTC evaluation requires CRYPTO_PAPER_MODE=true")
 STARTED_AT=time.time()
 STARTUP_BLOCK_SECONDS=float(os.getenv("PAPER_STARTUP_BLOCK_SECONDS","0"))
 def env_float(name,default):
@@ -133,15 +134,14 @@ def analyze(product="BTC-USD"):
             dollar_risk=lot_size*loss_per_lot
             dollar_reward=lot_size*max(abs(tp-p)-spread,0)*contract
     return locals()
-# A disabled symbol is never fetched, restored, opened, or sent as a signal.
-ACTIVE_SYMBOLS=("BTC/USD","ETH/USD")
-PAPER_MODE=True  # This release is authorized for simulation only.
+EVALUATION_SYMBOL = "BTC/USD"
 if os.getenv("RAILWAY_PROJECT_ID") and not os.getenv("RAILWAY_VOLUME_MOUNT_PATH"):
     raise RuntimeError("A persistent volume is required before paper signals can start")
 LEDGER=Ledger(os.getenv("PAPER_DB_PATH","/data/crypto-paper.sqlite3"))
-paper=LEDGER.positions()
-if any(symbol not in ACTIVE_SYMBOLS for symbol in paper):
-    raise RuntimeError("Disabled position requires explicit archival before starting")
+restored = LEDGER.positions()
+paper = {symbol: position for symbol, position in restored.items() if symbol == EVALUATION_SYMBOL}
+for symbol in restored.keys() - paper.keys():
+    print(f"PAPER PAUSED {symbol}: open position retained for separate reconciliation")
 
 def paper_track(symbol,x):
     if symbol not in paper or not x:return
@@ -171,12 +171,10 @@ def paper_track(symbol,x):
         LEDGER.save(symbol,q)
 
 def paper_open(symbol,x,message):
-    if symbol not in ACTIVE_SYMBOLS or not x or x["side"] not in ("LONG","SHORT") or symbol in paper:return False
+    if symbol != EVALUATION_SYMBOL or not x or x["side"] not in ("LONG","SHORT") or symbol in paper:return False
     if time.time()-STARTED_AT<STARTUP_BLOCK_SECONDS:return False
-    # Shared risk budget: adding ETH must not double the existing account risk.
-    used=sum(q["planned_risk"] for q in paper.values())
-    if used+x["dollar_risk"]>BTC_ACCOUNT_BALANCE*BTC_RISK_PCT/100+1e-6:
-        print(f"SIGNAL BLOCKED {symbol}: shared risk budget");return False
+    if x["dollar_risk"]>BTC_ACCOUNT_BALANCE*BTC_RISK_PCT/100+1e-6:
+        print(f"SIGNAL BLOCKED {symbol}: BTC risk budget");return False
     q=new_position(x)
     LEDGER.save(symbol,q,opening=True);paper[symbol]=q
     print(f'PAPER OPEN {symbol} {q["side"]} entry={q["entry"]:.6f} id={q["id"]}')
@@ -187,18 +185,21 @@ def ar(x):return {"LONG":"🟢 شراء","SHORT":"🔴 بيع","WAIT":"🟡 ان
 def msg(x,symbol="BTC/USD"):
     risk="لا دخول مؤكد" if x["side"]=="WAIT" else f'🛑 SL: ${x["sl"]:.2f}\n🎯 TP: ${x["tp"]:.2f}\n📦 الحجم المحسوب: {x["lot_size"]:.2f} lot\n💵 مخاطرة الصفقة: ${x["dollar_risk"]:.2f} من ${BTC_ACCOUNT_BALANCE:.2f} ({BTC_RISK_PCT:.2f}%)\n💰 العائد المتوقع بعد السبريد: ${x["dollar_reward"]:.2f}'
     return f'{symbol} ANALYST PRO\n\n🎯 القرار: {ar(x["side"])}\n💰 ${x["p"]:.2f}\n🟢 ميل الشراء: {x["bp"]}% | 🔴 ميل البيع: {x["sp"]}%\n📐 الهيكل 15m: {ar(x["st"])}\n⏱ 15m/1h/4h: {ar(x["t15"])} / {ar(x["t1"])} / {ar(x["t4"])}\n💧 Liquidity: {"Sweep BUY" if x["lb"] else "Sweep SELL" if x["ls"] else "لا Sweep مؤكد"}\n📈 RSI: {x["r"]:.1f} | ATR: {x["a"]:.2f}\n🟢 دعم: ${x["sup"]:.0f} | 🔴 مقاومة: ${x["res"]:.0f}\n📰 أخبار: {ar(x["n"])} | Reddit: {ar(x["rd"])} — معلومات فقط\n{risk}\n🧠 {"؛ ".join(x["why"][:5]) if x["why"] else "توافق محدود"}\n\n⚠️ إشارة تحليلية فقط.'
+def scan_btc():
+    symbol = EVALUATION_SYMBOL
+    x = run_with_timeout(analyze, 40, symbol)
+    if not x:
+        return
+    print(f'{symbol} {x["p"]:.2f} {x["side"]} BUY={x["bp"]}% SELL={x["sp"]}%')
+    paper_track(symbol, x)
+    if LEDGER.observe_signal(symbol, x["side"], int(x["c"][-1][0])):
+        paper_open(symbol, x, msg(x, symbol))
+
 def main():
-    print("PAPER ONLY active=BTC/USD,ETH/USD disabled=EUR/USD,USD/JPY")
+    print("PAPER ONLY active=BTC/USD paused=EUR/USD,USD/JPY,ETH/USD")
     print(f"LEDGER READY restored={len(paper)} path={os.getenv('PAPER_DB_PATH','/data/crypto-paper.sqlite3')}")
-    print("LEGACY BTC: 23 closed trades preserved under evaluation/; unresolved historical positions remain archived")
     while True:
-        for symbol,product in (("BTC/USD","BTC-USD"),("ETH/USD","ETH-USD")):
-            x=run_with_timeout(lambda product=product:analyze(product),40,symbol)
-            if not x:continue
-            print(f'{symbol} {x["p"]:.2f} {x["side"]} BUY={x["bp"]}% SELL={x["sp"]}%')
-            paper_track(symbol,x)
-            if LEDGER.observe_signal(symbol,x["side"],int(x["c"][-1][0])):
-                paper_open(symbol,x,msg(x,symbol))
+        scan_btc()
         print("HEARTBEAT")
         time.sleep(60)
 
