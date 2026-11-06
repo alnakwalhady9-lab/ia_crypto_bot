@@ -1,5 +1,7 @@
 import importlib
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -9,6 +11,7 @@ class PaperTests(unittest.TestCase):
         self.tmp=tempfile.TemporaryDirectory()
         os.environ['PAPER_DB_PATH']=self.tmp.name+'/paper.sqlite3'
         import main
+        main.LEDGER.db.close()
         self.m=importlib.reload(main)
         self.m.send=lambda message:None
         self.x=dict(side='LONG',p=100,sl=90,tp=120,c=[[900,99,101,100,100,1]],
@@ -47,12 +50,44 @@ class PaperTests(unittest.TestCase):
         import json
         result=json.loads(self.m.LEDGER.db.execute("SELECT payload FROM events WHERE kind='CLOSE'").fetchone()[0])
         self.assertEqual(result['result'],'SL_AMBIGUOUS')
-    def test_disabled_symbols_and_combined_risk(self):
-        self.assertFalse(self.m.paper_open('EUR/USD',self.x,'test'))
-        self.assertFalse(self.m.paper_open('USD/JPY',self.x,'test'))
-        x=dict(self.x,dollar_risk=49)
-        self.assertTrue(self.m.paper_open('BTC/USD',x,'test'))
-        self.assertFalse(self.m.paper_open('ETH/USD',x,'test'))
+    def test_disabled_symbols_and_btc_risk_limit(self):
+        for symbol in ('EUR/USD', 'USD/JPY', 'ETH/USD'):
+            self.assertFalse(self.m.paper_open(symbol, self.x, 'test'))
+        self.assertFalse(self.m.paper_open('BTC/USD', dict(self.x, dollar_risk=51), 'test'))
+        self.assertTrue(self.m.paper_open('BTC/USD', self.x, 'test'))
+        self.assertEqual(self.m.paper['BTC/USD']['phase'], 'btc-only-paper-v1')
+
+    def test_scan_only_fetches_btc(self):
+        with patch.object(self.m, 'candles', return_value=None) as feed:
+            self.m.scan_btc()
+        self.assertEqual([call.args[2] for call in feed.call_args_list], ['BTC-USD', 'BTC-USD'])
+
+    def test_paused_positions_survive_restart_outside_btc_sample(self):
+        from paper_ledger import new_position
+        old = dict(new_position(self.x), phase='btc-eth-paper-v1')
+        for symbol in ('BTC/USD', 'ETH/USD'):
+            self.m.LEDGER.save(symbol, old, opening=True)
+        self.m.LEDGER.db.close()
+        importlib.reload(self.m)
+        self.m.send = lambda message: None
+        self.assertEqual(set(self.m.paper), {'BTC/USD'})
+        self.m.paper_track('BTC/USD', dict(self.x, c=[[1800, 99, 121, 100, 120, 1]]))
+        self.assertEqual(self.m.LEDGER.positions(), {'ETH/USD': old})
+        import json
+        close = self.m.LEDGER.db.execute("SELECT payload FROM events WHERE kind='CLOSE'").fetchone()
+        self.assertEqual(json.loads(close[0])['phase'], 'btc-eth-paper-v1')
+
+    def test_unsafe_modes_abort_before_ledger_creation(self):
+        path = self.tmp.name + '/unsafe.sqlite3'
+        for mode in ('false', '0', 'live', '', 'typo'):
+            with self.subTest(mode=mode):
+                env = dict(os.environ, CRYPTO_PAPER_MODE=mode, PAPER_DB_PATH=path)
+                process = subprocess.run([sys.executable, 'main.py'], env=env,
+                                         capture_output=True, text=True, timeout=5)
+                self.assertNotEqual(process.returncode, 0)
+                self.assertIn('requires CRYPTO_PAPER_MODE=true', process.stderr)
+                self.assertFalse(os.path.exists(path))
+
     def test_eth_feed_and_sizing_are_independent(self):
         import time
         start=int(time.time()//900)*900
